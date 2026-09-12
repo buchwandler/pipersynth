@@ -51,3 +51,26 @@ class TextPreparationError(PiperSynthError):
 
 class OptionalDependencyError(PiperSynthError, ImportError):
     """An optional feature was requested without its dependency installed."""
+
+class AssetError(PiperSynthError):
+    """Base class for managed voice asset failures."""
+
+
+class VoiceNotFoundError(AssetError):
+    """The requested catalog voice or alias does not exist."""
+
+
+class AssetDownloadError(AssetError):
+    """A managed voice artifact could not be downloaded or verified."""
+
+
+class AssetCacheError(AssetError):
+    """A cached catalog or voice artifact is invalid or unusable."""
+
+
+class OfflineAssetError(AssetError):
+    """A required asset is unavailable while offline mode is enabled."""
+
+
+class CatalogUnavailableError(AssetError):
+    """The voice catalog could not be loaded or refreshed."""

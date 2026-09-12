@@ -8,8 +8,8 @@ from typing import Any, BinaryIO, Literal
 import numpy as np
 
 from .audio import audio_to_int16_bytes, float_to_int16, write_wav
-from .diagnostics import RuntimeDiagnostics
-from .errors import InvalidSynthesisConfigError, ModelInferenceError
+from .diagnostics import RuntimeDiagnostics, TimingDiagnostics
+from .errors import InvalidSynthesisConfigError, ModelInferenceError, OptionalDependencyError
 
 
 def _finite(value: float, name: str, *, minimum: float) -> None:
@@ -149,6 +149,7 @@ class AudioResult:
     chunks: list[AudioChunk] = field(default_factory=list)
     warnings: tuple[str, ...] = ()
     diagnostics: RuntimeDiagnostics | None = None
+    timing: TimingDiagnostics | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -174,6 +175,17 @@ class AudioResult:
     def save_wav(self, target: str | Path | BinaryIO) -> str | Path | BinaryIO:
         write_wav(target, self.audio, self.sample_rate)
         return target
+
+    def play(self, *, wait: bool = True) -> None:
+        """Play this result using the optional sounddevice dependency."""
+
+        try:
+            import sounddevice as sd
+        except ModuleNotFoundError as exc:
+            raise OptionalDependencyError(
+                "Audio playback requires sounddevice. Install pipersynth[playback]."
+            ) from exc
+        sd.play(self.audio, self.sample_rate, blocking=wait)
 
     def release_audio(self) -> None:
         self.audio = np.zeros(0, dtype=np.float32)
@@ -223,6 +235,17 @@ class AudioUnitResult:
     @property
     def duration_seconds(self) -> float:
         return self.audio.size / self.sample_rate
+    def play(self, *, wait: bool = True) -> None:
+        """Play this unit using the optional sounddevice dependency."""
+
+        try:
+            import sounddevice as sd
+        except ModuleNotFoundError as exc:
+            raise OptionalDependencyError(
+                "Audio playback requires sounddevice. Install pipersynth[playback]."
+            ) from exc
+        sd.play(self.audio, self.sample_rate, blocking=wait)
+
 
     def release_audio(self) -> None:
         self.audio = np.zeros(0, dtype=np.float32)

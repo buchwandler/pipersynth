@@ -3,16 +3,26 @@
 from piperg2p import VoiceConfig
 
 from ._version import __version__
-from .assets import VoiceBundle, load_catalog_voice
-from .config import GenerationConfig, PipelineConfig
-from .diagnostics import RuntimeDiagnostics, TimingDiagnostics
+from .asset_manager import CacheInfo, VoiceAssetManager, list_cached_voices, list_voices
+from .asset_progress import (
+    AssetProgressCallback,
+    AssetProgressEvent,
+    ConsoleAssetProgress,
+)
+from .assets import VoiceBundle, VoiceMetadata, load_catalog_voice
+from .convenience import synthesize, synthesize_to_wav
 from .errors import (
+    AssetCacheError,
+    AssetDownloadError,
+    AssetError,
+    CatalogUnavailableError,
     ConfigFileNotFoundError,
     InvalidSpeakerError,
     InvalidSynthesisConfigError,
     ModelFileNotFoundError,
     ModelInferenceError,
     ModelLoadError,
+    OfflineAssetError,
     OptionalDependencyError,
     PiperSynthError,
     SessionCreationError,
@@ -20,6 +30,7 @@ from .errors import (
     TextPreparationError,
     UnsupportedModelError,
     VoiceClosedError,
+    VoiceNotFoundError,
 )
 from .pipeline import PiperPipeline, PreparedAudioUnits, build_pipeline
 from .preparation import IdentityTextPreparer, PreparedTextResult, SpokenformTextPreparer
@@ -38,7 +49,15 @@ __all__ = [
     "AudioResult",
     "AudioUnitDescriptor",
     "AudioUnitResult",
+    "AssetCacheError",
+    "AssetDownloadError",
+    "AssetError",
+    "AssetProgressCallback",
+    "AssetProgressEvent",
     "GenerationConfig",
+    "CacheInfo",
+    "CatalogUnavailableError",
+    "ConsoleAssetProgress",
     "IdentityTextPreparer",
     "PiperPipeline",
     "PiperSynthError",
@@ -49,6 +68,7 @@ __all__ = [
     "ModelInferenceError",
     "ModelLoadError",
     "OptionalDependencyError",
+    "OfflineAssetError",
     "PiperVoice",
     "PipelineConfig",
     "PreparedAudioUnits",
@@ -62,11 +82,18 @@ __all__ = [
     "VoiceClosedError",
     "SpokenformTextPreparer",
     "SynthesisConfig",
+    "list_cached_voices",
     "TimingDiagnostics",
     "VoiceBundle",
     "VoiceConfig",
     "available_providers",
     "build_pipeline",
     "load_catalog_voice",
+    "list_voices",
+    "synthesize",
+    "synthesize_to_wav",
+    "VoiceAssetManager",
+    "VoiceMetadata",
+    "VoiceNotFoundError",
     "__version__",
 ]

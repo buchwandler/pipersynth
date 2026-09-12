@@ -11,6 +11,14 @@ from .errors import OptionalDependencyError, TextPreparationError
 _RAW_BLOCK_RE = re.compile(r"\[\[.*?\]\]", re.DOTALL)
 
 
+def normalize_catalog_language_for_spokenform(code: str) -> str:
+    """Convert a catalog locale such as ``en_US`` to a spokenform language."""
+
+    normalized = code.replace("-", "_").split("_", 1)[0].strip().lower()
+    if not normalized:
+        raise ValueError("catalog language code must not be empty")
+    return normalized
+
 @dataclass(frozen=True, slots=True)
 class PreparedTextResult:
     """Text preparation output with source provenance and diagnostics."""

@@ -110,6 +110,36 @@ class PiperVoice:
             config_path=config_file,
         )
 
+    @classmethod
+    def from_pretrained(
+        cls,
+        voice: str,
+        *,
+        cache_dir: str | Path | None = None,
+        offline: bool | None = None,
+        refresh_catalog: bool = False,
+        force_download: bool = False,
+        providers: Sequence[ProviderSpec | ProviderConfig] | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+        session_options: Any | None = None,
+        frontend_options: Mapping[str, Any] | None = None,
+        progress: Callable[..., Any] | None = None,
+    ) -> PiperVoice:
+        from .asset_manager import VoiceAssetManager
+
+        manager = VoiceAssetManager(cache_dir, offline=offline, progress=progress)
+        bundle = manager.resolve_voice(
+            voice, refresh_catalog=refresh_catalog, force_download=force_download
+        )
+        return cls.load(
+            bundle.model_path,
+            bundle.config_path,
+            providers=providers,
+            provider_options=provider_options,
+            session_options=session_options,
+            frontend_options=frontend_options,
+        )
+
     @property
     def closed(self) -> bool:
         return self._closed

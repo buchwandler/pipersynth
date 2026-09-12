@@ -1,90 +1,99 @@
 # PiperSynth
 
-PiperSynth is an independent Apache-2.0 Python runtime for Piper-compatible ONNX voice models. It uses `piperg2p` for voice configuration, text-to-phoneme conversion, and phoneme IDs, and owns the ONNX session, audio, lifecycle, and streaming layers. It does not depend on or import the Piper runtime or `piper-tts`.
+PiperSynth is an independent Apache-2.0 Python runtime for Piper-compatible ONNX voice models. It uses `piperg2p` for voice configuration, text-to-phoneme conversion, and phoneme IDs, and owns ONNX inference, audio conversion, WAV writing, lifecycle, and streaming. It does not depend on the upstream Piper runtime or `piper-tts`.
 
-## Install
+## Quick start
 
-The core package keeps ONNX Runtime optional:
+Install the CPU runtime and catalog support:
 
 ```bash
 pip install "pipersynth[cpu]"
 ```
 
-Use `pipersynth[gpu]` for the GPU runtime, or install the package without either extra when injecting a test session. Optional written-to-spoken preparation and catalog support are available with `pipersynth[spokenform]` and `pipersynth[catalog]`.
+Generate a WAV from a catalog voice:
 
-## Basic use
+```python
+from pipersynth import synthesize_to_wav
+
+synthesize_to_wav(
+    "Hello, this sentence was generated with PiperSynth.",
+    "hello.wav",
+    voice="en_US-lessac-medium",
+)
+```
+
+On first use PiperSynth fetches the voice catalog and downloads the selected model, matching config, and `MODEL_CARD` into its local cache. Later calls reuse the cached assets. The convenience call creates a fresh pipeline and closes it before returning.
+
+For repeated synthesis, reuse one pipeline and one ONNX session:
+
+```python
+from pipersynth import PiperPipeline
+
+with PiperPipeline.from_pretrained("en_US-lessac-medium") as pipe:
+    pipe("One.").save_wav("one.wav")
+    pipe("Two.").save_wav("two.wav")
+```
+
+Use cached assets only with `offline=True`:
+
+```python
+with PiperPipeline.from_pretrained("en_US-lessac-medium", offline=True) as pipe:
+    pipe("This uses cached assets only.").save_wav("offline.wav")
+```
+
+## Local models
+
+Existing explicit local model usage remains network-free:
 
 ```python
 from pipersynth import PiperPipeline, PipelineConfig
 
 with PiperPipeline(PipelineConfig(model_path="voice.onnx")) as pipe:
-    result = pipe("Hello world.")
-    result.save_wav("hello.wav")
+    pipe("No network is used here.").save_wav("local.wav")
 ```
 
-`PiperPipeline` reuses one voice and ONNX session for later calls. Results retain both `source_text` and `prepared_text`.
+`PiperVoice.load()` and `PiperPipeline(PipelineConfig(...))` never resolve the catalog or download assets. Use `PiperVoice.from_pretrained()` or `PiperPipeline.from_pretrained()` when managed catalog resources are desired.
 
-## Low-level chunks
+## Voice discovery and cache
 
 ```python
-from pipersynth import PiperVoice, SynthesisConfig
+from pipersynth import VoiceAssetManager, list_voices
 
-with PiperVoice.load("voice.onnx") as voice:
-    for chunk in voice.synthesize("First sentence. Second sentence."):
-        send_pcm(chunk.audio_int16_bytes)
+for voice in list_voices(language="en", quality="medium"):
+    print(voice.id, voice.name)
+
+manager = VoiceAssetManager()
+metadata = manager.get_voice_metadata("en_US-lessac-medium")
+bundle = manager.resolve_voice("en_US-lessac-medium")
+print(bundle.model_card_text)
 ```
 
-The low-level API expects prepared/plain text. Text normalization is a pipeline concern.
+Set `PIPERSYNTH_CACHE_DIR` to override the platform cache location, or pass `cache_dir=` explicitly. Set `PIPERSYNTH_OFFLINE=1` for process-wide offline operation. Explicit `offline=` arguments take precedence.
 
-## Expert controls
+Each downloaded bundle contains the upstream `MODEL_CARD`. Voice licenses apply to the downloaded model and are not part of the PiperSynth Apache-2.0 license.
 
-```python
-from pipersynth import PiperVoice, SynthesisConfig
+The CLI provides catalog and cache operations:
 
-with PiperVoice.load(
-    "voice.onnx",
-    providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-) as voice:
-    audio = voice.synthesize_ids(
-        [1, 0, 42, 0, 2],
-        SynthesisConfig(length_scale=0.95, noise_scale=0.667, noise_w_scale=0.8),
-    )
+```bash
+pipersynth voices list --language en --quality medium
+pipersynth voices show en_US-lessac-medium
+pipersynth voices download en_US-lessac-medium
+pipersynth voices license en_US-lessac-medium
+pipersynth voices path en_US-lessac-medium
+pipersynth speak --voice en_US-lessac-medium "Hello from PiperSynth." -o hello.wav
+pipersynth cache info
 ```
 
-IDs must belong to the loaded voice's symbol map. Multi-speaker voices accept a validated `speaker_id`; configured names can be resolved with `voice.resolve_speaker_id(name)`.
-
-## Written-to-spoken preparation
-
-Identity preparation is the default. To opt in to `spokenform`, select a language explicitly:
-
-```python
-from pipersynth import PiperPipeline, PipelineConfig
-
-pipe = PiperPipeline(PipelineConfig(
-    model_path="de_DE-voice.onnx",
-    text_preparation="spokenform",
-    language="de",
-))
-result = pipe.run("Am 14.05.2026 sind es 2 kg.")
-```
-
-Raw `[[ phoneme ]]` blocks are protected from written-text normalization and remain owned by `piperg2p`.
-
-## CLI
+The original local-model command remains supported:
 
 ```bash
 pipersynth voice.onnx "Hello world." -o hello.wav
-pipersynth voice.onnx "Hello." --speaker alice --provider CPUExecutionProvider
 ```
 
-The CLI supports config, speaker, acoustic scales, sentence silence, volume, normalization, provider, language, and `--prepare-text` controls. It is a thin client of the public pipeline API.
+## Optional features
 
-## Compatibility and scope
+Install `pipersynth[spokenform]` for written-text preparation, `pipersynth[playback]` for `AudioResult.play()` and streaming playback, or `pipersynth[gpu]` for GPU ONNX Runtime. Catalog support is included in the CPU and GPU extras and is also available as `pipersynth[catalog]`.
 
-The core dependency range is `piperg2p>=0.2.0,<0.3`. Frontend capabilities are limited to those provided by the installed `piperg2p`; PiperSynth does not reimplement eSpeak or other G2P backends.
+The core API supports sentence units and real paragraph grouping through `prepare_units(..., unit="paragraph")`, plus PCM iteration through `iter_pcm()`. It does not claim generic voice blending, approximate word timings, hidden language detection, full SSMD support, model conversion, training, quantization, or HTTP serving.
 
-Voice artifacts are local-path-first: an ONNX model, matching `.onnx.json`, and model-specific `MODEL_CARD`. Catalog downloads are explicit and never occur during ordinary `PiperVoice.load`.
-
-PiperSynth does not provide Piper alignment patching, word timings, SSMD, playback, HTTP serving, automatic language detection, model conversion, training, quantization, or voice blending.
-
-See [`docs/architecture.md`](docs/architecture.md), [`docs/providers.md`](docs/providers.md), and [`docs/troubleshooting.md`](docs/troubleshooting.md) for details.
+See [`docs/architecture.md`](docs/architecture.md), [`docs/providers.md`](docs/providers.md), [`docs/troubleshooting.md`](docs/troubleshooting.md), and [`examples/download_and_synthesize.py`](examples/download_and_synthesize.py).
