@@ -1,0 +1,18 @@
+schema_version = 3
+
+[project]
+uuid = "03f0f653-4df4-470e-af90-8eea12ab4d51"
+name = "pipersynth"
+
+[ledgers.taskledger.mounts.data]
+storage = "external"
+root = "../ledger"
+
+[ledgers.taskledger.mounts.runtime]
+storage = "user-data"
+
+[ledgers.taskledger.mounts.logs]
+storage = "user-data"
+
+[ledgers.taskledger.mounts.indexes]
+storage = "cache"
