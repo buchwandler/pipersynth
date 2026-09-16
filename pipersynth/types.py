@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Literal
 
 import numpy as np
+from ttsplan import TTSPlan
 
 from .audio import audio_to_int16_bytes, float_to_int16, write_wav
 from .diagnostics import RuntimeDiagnostics, TimingDiagnostics
@@ -146,7 +147,10 @@ class AudioResult:
     sample_rate: int
     source_text: str
     prepared_text: str
+    plan: TTSPlan | None = None
+    plan_id: str | None = None
     chunks: list[AudioChunk] = field(default_factory=list)
+    markers: list[dict[str, Any]] = field(default_factory=list)
     warnings: tuple[str, ...] = ()
     diagnostics: RuntimeDiagnostics | None = None
     timing: TimingDiagnostics | None = None
@@ -159,6 +163,7 @@ class AudioResult:
         self.chunks = list(self.chunks)
         self.warnings = tuple(self.warnings)
         self.metadata = dict(self.metadata)
+        self.markers = list(self.markers)
 
     @property
     def duration_seconds(self) -> float:
@@ -201,6 +206,10 @@ class AudioUnitDescriptor:
     text: str
     char_start: int | None = None
     char_end: int | None = None
+    plan_unit_id: str | None = None
+    content_hash: str | None = None
+    segment_ids: tuple[str, ...] = ()
+    marker_ids: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -214,6 +223,9 @@ class AudioUnitResult:
     phoneme_ids: tuple[int, ...]
     warnings: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
+    plan_unit_id: str | None = None
+    segment_ids: tuple[str, ...] = ()
+    marker_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         self.audio = np.asarray(self.audio, dtype=np.float32)
@@ -223,6 +235,8 @@ class AudioUnitResult:
         self.phoneme_ids = tuple(self.phoneme_ids)
         self.warnings = tuple(self.warnings)
         self.metadata = dict(self.metadata)
+        self.segment_ids = tuple(self.segment_ids)
+        self.marker_ids = tuple(self.marker_ids)
 
     @property
     def audio_int16_array(self) -> np.ndarray:

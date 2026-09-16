@@ -41,6 +41,20 @@ with PiperPipeline.from_pretrained("en_US-lessac-medium", offline=True) as pipe:
     pipe("This uses cached assets only.").save_wav("offline.wav")
 ```
 
+## Planning and rendering
+
+`PiperPipeline.plan()` compiles text into an immutable `TTSPlan`. The planner owns document parsing, Spokenform, SSMD, language runs, semantic units, markers, and resolved pauses. Rendering an existing plan never replans it, so the same plan can be rendered repeatedly with different acoustic overrides:
+
+```python
+with PiperPipeline.from_pretrained("en_US-lessac-medium") as pipe:
+    plan = pipe.plan("One. Two.", unit="sentence")
+    plan.save("speech.ttsplan.json")
+    normal = pipe.render_plan(plan, length_scale=1.0)
+    fast = pipe.render_plan(plan, length_scale=0.9)
+```
+
+Use `is_phonemes=True` only for direct Piper phoneme input. It bypasses TTSPlan and does not attach a semantic plan to the result.
+
 ## Local models
 
 Existing explicit local model usage remains network-free:
@@ -92,8 +106,8 @@ pipersynth voice.onnx "Hello world." -o hello.wav
 
 ## Optional features
 
-Install `pipersynth[spokenform]` for written-text preparation, `pipersynth[playback]` for `AudioResult.play()` and streaming playback, or `pipersynth[gpu]` for GPU ONNX Runtime. Catalog support is included in the CPU and GPU extras and is also available as `pipersynth[catalog]`.
+The TTSPlan dependency provides Spokenform and SSMD planning. Install `pipersynth[playback]` for `AudioResult.play()` and streaming playback, or `pipersynth[gpu]` for GPU ONNX Runtime. Catalog support is included in the CPU and GPU extras and is also available as `pipersynth[catalog]`.
 
-The core API supports sentence units and real paragraph grouping through `prepare_units(..., unit="paragraph")`, plus PCM iteration through `iter_pcm()`. It does not claim generic voice blending, approximate word timings, hidden language detection, full SSMD support, model conversion, training, quantization, or HTTP serving.
+The core API supports sentence and paragraph units through TTSPlan, resolved semantic pauses, plan save/load, and PCM iteration through `iter_pcm()`. It does not claim generic voice blending, approximate word timings, hidden language detection, model conversion, training, quantization, or HTTP serving.
 
 See [`docs/architecture.md`](docs/architecture.md), [`docs/providers.md`](docs/providers.md), [`docs/troubleshooting.md`](docs/troubleshooting.md), and [`examples/download_and_synthesize.py`](examples/download_and_synthesize.py).

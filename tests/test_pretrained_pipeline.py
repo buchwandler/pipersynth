@@ -29,7 +29,7 @@ def test_from_pretrained_builds_config_and_infers_language(tmp_path: Path, monke
     pipeline = PiperPipeline.from_pretrained("voice", text_preparation="spokenform")
     assert pipeline.config.model_path == model
     assert pipeline.config.config_path == config
-    assert pipeline.config.language == "en"
+    assert pipeline.config.language == "en-us"
     assert pipeline.voice_bundle is bundle
     pipeline.close()
 

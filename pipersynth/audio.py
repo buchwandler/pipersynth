@@ -62,6 +62,11 @@ def silence_samples(sample_rate: int, seconds: float) -> int:
         raise ValueError("seconds must be finite and >= 0")
     return round(sample_rate * seconds)
 
+def pause_audio(sample_rate: int, seconds: float) -> np.ndarray:
+    """Return float32 silence for one resolved semantic pause."""
+    return np.zeros(silence_samples(sample_rate, seconds), dtype=np.float32)
+
+
 
 def write_wav(
     target: str | Path | BinaryIO,

@@ -25,6 +25,30 @@ class SessionCreationError(ModelLoadError):
     """The inference session could not be created."""
 
 
+class PlanRenderingError(PiperSynthError):
+    """A TTSPlan could not be rendered by the active Piper voice."""
+
+
+
+class UnsupportedPlanLanguageError(PlanRenderingError):
+    """A plan segment language is unsupported by the active Piper voice."""
+
+
+
+class UnsupportedPlanDirectiveError(PlanRenderingError):
+    """A plan directive is unsupported by PiperSynth."""
+
+
+
+class VoiceBindingError(PlanRenderingError):
+    """A logical plan voice cannot be bound to the active Piper voice."""
+
+
+
+class PlanSampleRateMismatchError(PlanRenderingError):
+    """Rendered voices do not share the output sample rate."""
+
+
 class SynthesisError(PiperSynthError):
     """Speech synthesis failed."""
 

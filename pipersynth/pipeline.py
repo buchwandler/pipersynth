@@ -7,83 +7,144 @@ from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
-from piperg2p import PhonemeSentence, PhonemizeResult
+from ttsplan import (
+    LinguisticsConfig,
+    PauseConfig,
+    SSMDConfig,
+    TTSPlan,
+    TTSPlanner,
+    normalize_language,
+)
 
 from .audio import silence_samples
 from .config import GenerationConfig, PipelineConfig
 from .diagnostics import TimingDiagnostics
-from .errors import OptionalDependencyError, VoiceClosedError
-from .preparation import IdentityTextPreparer, PreparedTextResult, SpokenformTextPreparer
+from .errors import ConfigFileNotFoundError, OptionalDependencyError, VoiceClosedError
+from .plan_adapter import PreparedPiperUnit
+from .plan_adapter import prepare_plan as adapt_plan
+from .planning import inspect_voice_config, planner_config_from_pipersynth
 from .types import AudioChunk, AudioResult, AudioUnitDescriptor, AudioUnitResult, SynthesisConfig
 from .voice import PiperVoice
 
 
 class PreparedAudioUnits:
-    """Prepared sentence units rendered on demand by a reusable pipeline."""
+    """Plan-backed audio units rendered lazily by a reusable pipeline."""
 
     def __init__(
         self,
         pipeline: PiperPipeline,
-        prepared_text: PreparedTextResult,
-        frontend_result: Any,
+        plan: TTSPlan,
+        prepared_units: tuple[PreparedPiperUnit, ...],
         generation: GenerationConfig,
-        unit_kind: Literal["sentence", "paragraph"],
-        unit_texts: tuple[str, ...] | None = None,
     ) -> None:
         self._pipeline = pipeline
-        self._prepared_text = prepared_text
-        self._frontend_result = frontend_result
+        self.plan = plan
+        self._prepared_units = prepared_units
         self._generation = generation
         self._closed = False
-        self.unit_kind = unit_kind
+        self.unit_kind = plan.config.get("unit", "paragraph")
         self.units = tuple(
             AudioUnitDescriptor(
-                index,
-                unit_kind,
-                (unit_texts[index] if unit_texts is not None else sentence.phoneme_string),
+                index=unit.index,
+                unit_kind=unit.kind,
+                text=plan.texts.spoken[unit.spoken_start : unit.spoken_end],
+                char_start=unit.spoken_start,
+                char_end=unit.spoken_end,
+                plan_unit_id=unit.plan_unit_id,
+                content_hash=unit.content_hash,
+                segment_ids=unit.segment_ids,
+                marker_ids=unit.marker_ids,
             )
-            for index, sentence in enumerate(frontend_result.sentences)
+            for unit in prepared_units
         )
+        self._by_index = {unit.index: unit for unit in prepared_units}
+        self._descriptor_by_index = {descriptor.index: descriptor for descriptor in self.units}
 
     def _ensure_open(self) -> None:
         if self._closed:
             raise VoiceClosedError("PreparedAudioUnits is closed")
+
+    def _marker_metadata(self, unit: PreparedPiperUnit, audio: np.ndarray) -> list[dict[str, Any]]:
+        segment_by_id = {segment.id: segment for segment in self.plan.segments}
+        offsets: dict[int, int] = {unit.spoken_start: 0, unit.spoken_end: audio.size}
+        offset = 0
+        for prepared in unit.segments:
+            segment = segment_by_id[prepared.plan_segment_id]
+            offset += silence_samples(self._pipeline.voice.config.sample_rate, prepared.pause_before_seconds)
+            offsets[segment.spoken_start] = offset
+            offset += self._segment_audio_sizes.get(prepared.plan_segment_id, 0)
+            offsets[segment.spoken_end] = offset
+            offset += silence_samples(self._pipeline.voice.config.sample_rate, prepared.pause_after_seconds)
+        markers = {marker.id: marker for marker in self.plan.markers}
+        result: list[dict[str, Any]] = []
+        for marker_id in unit.marker_ids:
+            marker = markers[marker_id]
+            sample_offset = offsets.get(marker.spoken_position)
+            result.append(
+                {
+                    "id": marker.id,
+                    "name": marker.name,
+                    "char_offset": marker.spoken_position,
+                    "sample_offset": sample_offset,
+                    "timing": "resolved" if sample_offset is not None else "unresolved",
+                }
+            )
+        return result
+
+    def _render_one(self, unit: PreparedPiperUnit) -> AudioUnitResult:
+        voice = self._pipeline.voice
+        parts: list[np.ndarray] = []
+        phonemes: list[str] = []
+        phoneme_ids: list[int] = []
+        warnings: list[str] = []
+        self._segment_audio_sizes: dict[str, int] = {}
+        for segment in unit.segments:
+            before = silence_samples(voice.config.sample_rate, segment.pause_before_seconds)
+            if before:
+                parts.append(np.zeros(before, dtype=np.float32))
+            if segment.phoneme_ids:
+                audio = voice.synthesize_ids(segment.phoneme_ids, segment.synthesis)
+                self._segment_audio_sizes[segment.plan_segment_id] = audio.size
+                parts.append(audio)
+            else:
+                self._segment_audio_sizes[segment.plan_segment_id] = 0
+            after = silence_samples(voice.config.sample_rate, segment.pause_after_seconds)
+            if after:
+                parts.append(np.zeros(after, dtype=np.float32))
+            phonemes.extend(segment.phonemes)
+            phoneme_ids.extend(segment.phoneme_ids)
+            warnings.extend(segment.warnings)
+        audio = np.concatenate(parts).astype(np.float32, copy=False) if parts else np.zeros(0, dtype=np.float32)
+        metadata = {"plan_id": self.plan.plan_id, "frontend_diagnostics": [segment.metadata for segment in unit.segments]}
+        markers = self._marker_metadata(unit, audio)
+        metadata["markers"] = markers
+        return AudioUnitResult(
+            descriptor=self._descriptor_by_index[unit.index],
+            audio=audio,
+            sample_rate=voice.config.sample_rate,
+            phonemes=tuple(phonemes),
+            phoneme_ids=tuple(phoneme_ids),
+            warnings=tuple(warnings),
+            metadata=metadata,
+            plan_unit_id=unit.plan_unit_id,
+            segment_ids=unit.segment_ids,
+            marker_ids=unit.marker_ids,
+        )
 
     def render(
         self,
         indices: tuple[int, ...] | list[int] | None = None,
         skip_indices: tuple[int, ...] | list[int] = (),
     ) -> Iterator[AudioUnitResult]:
-        """Render selected units lazily, preserving their stable source indices."""
-
         self._ensure_open()
-        selected = tuple(range(len(self.units))) if indices is None else tuple(indices)
+        selected = tuple(self._by_index) if indices is None else tuple(indices)
         skipped = set(skip_indices)
         for index in selected:
             if index in skipped:
                 continue
-            if index < 0 or index >= len(self.units):
+            if index not in self._by_index:
                 raise IndexError(f"unit index {index} is out of range")
-            sentence = self._frontend_result.sentences[index]
-            if not sentence.ids:
-                continue
-            voice = self._pipeline.voice
-            audio = voice.synthesize_ids(
-                sentence.ids,
-                self._pipeline._to_synthesis_config(self._generation),
-            )
-            metadata: dict[str, Any] = {}
-            if self._frontend_result.diagnostics is not None:
-                metadata["frontend_diagnostics"] = self._frontend_result.diagnostics
-            yield AudioUnitResult(
-                descriptor=self.units[index],
-                audio=audio,
-                sample_rate=voice.config.sample_rate,
-                phonemes=tuple(sentence.phonemes),
-                phoneme_ids=tuple(sentence.ids),
-                warnings=tuple(sentence.warnings),
-                metadata=metadata,
-            )
+            yield self._render_one(self._by_index[index])
 
     def close(self) -> None:
         self._closed = True
@@ -97,7 +158,7 @@ class PreparedAudioUnits:
 
 
 class PiperPipeline:
-    """Reusable high-level text preparation and Piper voice synthesis pipeline."""
+    """Reusable TTSPlan semantic planner and Piper voice renderer."""
 
     @classmethod
     def from_pretrained(
@@ -115,21 +176,30 @@ class PiperPipeline:
         frontend_options: Mapping[str, Any] | None = None,
         text_preparation: Literal["identity", "spokenform"] = "identity",
         language: str | None = None,
+        document_format: Literal["plain", "ssmd"] = "plain",
+        unit: Literal["paragraph", "sentence"] = "paragraph",
+        pauses: PauseConfig | None = None,
+        linguistics: LinguisticsConfig | None = None,
+        ssmd: SSMDConfig | None = None,
+        overlap_mode: Literal["snap", "strict"] = "snap",
+        language_aliases: Mapping[str, str] | None = None,
+        planner_diagnostics: bool = True,
+        directive_policy: Literal["error", "warn", "ignore"] = "error",
+        language_policy: Literal["strict", "allow"] = "strict",
         retain_unit_audio: bool = False,
         return_diagnostics: bool = True,
         progress: Callable[..., Any] | None = None,
     ) -> PiperPipeline:
         from .asset_manager import VoiceAssetManager
-        from .preparation import normalize_catalog_language_for_spokenform
 
         manager = VoiceAssetManager(cache_dir, offline=offline, progress=progress)
         bundle = manager.resolve_voice(
             voice, refresh_catalog=refresh_catalog, force_download=force_download
         )
-        if text_preparation == "spokenform" and language is None:
+        if language is None:
             if bundle.metadata is None:
-                raise ValueError("spokenform language cannot be inferred without voice metadata")
-            language = normalize_catalog_language_for_spokenform(bundle.metadata.language_code)
+                raise ValueError("planner language cannot be inferred without voice metadata")
+            language = normalize_language(bundle.metadata.language_code)
         config = PipelineConfig(
             model_path=bundle.model_path,
             config_path=bundle.config_path,
@@ -138,8 +208,18 @@ class PiperPipeline:
             provider_options=provider_options,
             session_options=session_options,
             frontend_options=frontend_options,
-            text_preparation=text_preparation,
             language=language,
+            document_format=document_format,
+            text_preparation=text_preparation,
+            unit=unit,
+            pauses=pauses or PauseConfig(),
+            linguistics=linguistics or LinguisticsConfig(),
+            ssmd=ssmd or SSMDConfig(),
+            overlap_mode=overlap_mode,
+            language_aliases=language_aliases or {},
+            planner_diagnostics=planner_diagnostics,
+            directive_policy=directive_policy,
+            language_policy=language_policy,
             retain_unit_audio=retain_unit_audio,
             return_diagnostics=return_diagnostics,
         )
@@ -152,21 +232,30 @@ class PiperPipeline:
         config: PipelineConfig,
         *,
         voice_factory: Callable[[PipelineConfig], PiperVoice] | None = None,
-        text_preparer: Callable[[str, str | None], PreparedTextResult] | None = None,
+        planner: TTSPlanner | None = None,
     ) -> None:
         self.config = config
         self._voice_factory = voice_factory
-        self._text_preparer = text_preparer
-        self._default_text_preparer = (
-            SpokenformTextPreparer()
-            if config.text_preparation == "spokenform"
-            else IdentityTextPreparer()
-        )
         self._voice: PiperVoice | None = None
         self._voice_bundle: Any = None
-        self._last_timing: dict[str, float] = {}
+        self._voice_info = None
+        self._planner = planner
         self._prepared: list[PreparedAudioUnits] = []
+        self._last_timing: dict[str, float] = {}
         self._closed = False
+        if self._planner is None and config.language:
+            self._planner = TTSPlanner(planner_config_from_pipersynth(config))
+        elif self._planner is None:
+            try:
+                self._voice_info = inspect_voice_config(config)
+            except ConfigFileNotFoundError:
+                pass
+            else:
+                self._planner = TTSPlanner(
+                    planner_config_from_pipersynth(
+                        config, language=self._voice_info.planner_language
+                    )
+                )
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -191,26 +280,80 @@ class PiperPipeline:
 
     @property
     def voice_bundle(self) -> Any:
-        """Return managed asset provenance, if this is a pretrained pipeline."""
-
         return self._voice_bundle
 
-    def _prepare_text(self, text: str) -> PreparedTextResult:
-        if self._text_preparer is not None:
-            return self._text_preparer(text, self.config.language)
-        return self._default_text_preparer.prepare(text, language=self.config.language)
+    def _ensure_planner(self, config: PipelineConfig) -> TTSPlanner:
+        self._ensure_open()
+        if self._planner is not None:
+            return self._planner
+        if config.language:
+            language = config.language
+        elif self._voice_info is not None:
+            language = self._voice_info.planner_language
+        elif self._voice_factory is not None:
+            candidate = getattr(self.voice.config, "espeak_voice", None)
+            if not isinstance(candidate, str) or not candidate.strip():
+                raise ValueError("A planner language could not be resolved")
+            language = candidate
+        else:
+            self._voice_info = inspect_voice_config(config)
+            language = self._voice_info.planner_language
+        planner_config = planner_config_from_pipersynth(config, language=language)
+        self._planner = TTSPlanner(planner_config)
+        return self._planner
 
-    def _generation(self, overrides: Mapping[str, Any]) -> GenerationConfig:
-        unknown = set(overrides) - set(GenerationConfig.__dataclass_fields__)
+    def _resolve_run_config(self, overrides: Mapping[str, Any]) -> PipelineConfig:
+        generation_fields = set(GenerationConfig.__dataclass_fields__)
+        planner_fields = {
+            "language",
+            "document_format",
+            "text_preparation",
+            "unit",
+            "pauses",
+            "linguistics",
+            "ssmd",
+            "overlap_mode",
+            "language_aliases",
+            "planner_diagnostics",
+            "directive_policy",
+            "language_policy",
+        }
+        unknown = set(overrides) - generation_fields - planner_fields
         if unknown:
             names = ", ".join(sorted(unknown))
-            raise TypeError(f"unknown generation override(s): {names}")
-        return replace(self.config.generation, **dict(overrides))
+            raise TypeError(f"unknown run override(s): {names}")
+        generation = replace(
+            self.config.generation,
+            **{key: value for key, value in overrides.items() if key in generation_fields},
+        )
+        pipeline = {
+            key: value for key, value in overrides.items() if key in planner_fields
+        }
+        return replace(self.config, generation=generation, **pipeline)
+
+    def _planner_config(self, config: PipelineConfig) -> Any:
+        planner = self._ensure_planner(config)
+        language = config.language
+        if language is None:
+            language = self._voice_info.planner_language if self._voice_info is not None else getattr(self.voice.config, "espeak_voice", None)
+        return planner, planner_config_from_pipersynth(config, language=language)
+
+    def plan(
+        self,
+        text: str,
+        *,
+        unit: Literal["paragraph", "sentence"] | None = None,
+        **planning_overrides: Any,
+    ) -> TTSPlan:
+        config = self._resolve_run_config(
+            {**planning_overrides, **({"unit": unit} if unit is not None else {})}
+        )
+        planner, planner_config = self._planner_config(config)
+        return planner.plan(text, config=planner_config, unit=unit)
 
     def _to_synthesis_config(self, generation: GenerationConfig) -> SynthesisConfig:
-        speaker_id = self.voice.resolve_speaker_id(generation.speaker)
         return SynthesisConfig(
-            speaker_id=speaker_id,
+            speaker_id=self.voice.resolve_speaker_id(generation.speaker),
             length_scale=generation.length_scale,
             noise_scale=generation.noise_scale,
             noise_w_scale=generation.noise_w_scale,
@@ -218,61 +361,125 @@ class PiperPipeline:
             volume=generation.volume,
         )
 
+    def prepare_plan(self, plan: TTSPlan, **render_overrides: Any) -> PreparedAudioUnits:
+        self._ensure_open()
+        planner_fields = {
+            "language", "document_format", "text_preparation", "unit", "pauses", "linguistics",
+            "ssmd", "overlap_mode", "language_aliases", "planner_diagnostics", "directive_policy",
+            "language_policy",
+        }
+        if planner_fields.intersection(render_overrides):
+            names = ", ".join(sorted(planner_fields.intersection(render_overrides)))
+            raise TypeError(f"planning override(s) are not allowed while rendering a plan: {names}")
+        config = render_overrides.pop("config", None)
+        effective = config if isinstance(config, PipelineConfig) else self._resolve_run_config(render_overrides)
+        started = time.perf_counter()
+        prepared = adapt_plan(
+            plan,
+            self.voice,
+            effective.generation,
+            directive_policy=effective.directive_policy,
+            language_policy=effective.language_policy,
+            language_aliases=effective.language_aliases,
+        )
+        self._last_timing["g2p_ms"] = (time.perf_counter() - started) * 1000
+        result = PreparedAudioUnits(self, plan, prepared, effective.generation)
+        self._prepared.append(result)
+        return result
+
+    def render_plan(self, plan: TTSPlan, **render_overrides: Any) -> AudioResult:
+        self._ensure_open()
+        plan.validate()
+        started = time.perf_counter()
+        prepared = self.prepare_plan(plan, **render_overrides)
+        try:
+            units = list(prepared.render())
+        finally:
+            prepared.close()
+        inference_ms = (time.perf_counter() - started) * 1000
+        parts = [unit.audio for unit in units]
+        audio = np.concatenate(parts).astype(np.float32, copy=False) if parts else np.zeros(0, dtype=np.float32)
+        markers = [marker for unit in units for marker in unit.metadata.get("markers", [])]
+        warnings = tuple(warning for unit in units for warning in unit.warnings)
+        metadata = {
+            "plan_id": plan.plan_id,
+            "ttsplan_producer": dict(plan.producer),
+            "ttsplan_schema_version": plan.schema_version,
+            "voice_id": getattr(self._voice_bundle, "voice_id", None),
+            "voice_source_revision": getattr(getattr(self._voice_bundle, "metadata", None), "source_revision", None),
+            "frontend": getattr(getattr(self.voice.frontend, "diagnostics", None), "backend", None),
+            "provider": self.voice.diagnostics.providers_active,
+        }
+        timing = TimingDiagnostics(
+            planning_ms=self._last_timing.get("planning_ms"),
+            g2p_ms=self._last_timing.get("g2p_ms"),
+            inference_ms=inference_ms,
+            postprocess_ms=0.0,
+            total_ms=(time.perf_counter() - started) * 1000,
+        )
+        diagnostics = None
+        if self.config.return_diagnostics:
+            diagnostics = replace(
+                self.voice.diagnostics,
+                plan_id=plan.plan_id,
+                ttsplan_producer=dict(plan.producer),
+                ttsplan_schema_version=plan.schema_version,
+                voice_id=metadata["voice_id"],
+                voice_source_revision=metadata["voice_source_revision"],
+            )
+        return AudioResult(
+            audio=audio,
+            sample_rate=self.voice.config.sample_rate,
+            source_text=plan.source.text,
+            prepared_text=plan.texts.spoken,
+            plan=plan,
+            plan_id=plan.plan_id,
+            chunks=[
+                AudioChunk(
+                    sample_rate=unit.sample_rate,
+                    audio_float_array=unit.audio,
+                    phonemes=unit.phonemes,
+                    phoneme_ids=unit.phoneme_ids,
+                    warnings=unit.warnings,
+                    metadata=unit.metadata,
+                )
+                for unit in units
+            ] if self.config.retain_unit_audio else [],
+            markers=markers,
+            warnings=tuple(plan.warnings) + warnings,
+            diagnostics=diagnostics,
+            timing=timing if self.config.return_diagnostics else None,
+            metadata=metadata,
+        )
+
     def prepare_units(
         self,
         text: str,
         *,
-        unit: Literal["sentence", "paragraph"] = "sentence",
+        unit: Literal["paragraph", "sentence"] | None = None,
         **overrides: Any,
     ) -> PreparedAudioUnits:
-        self._ensure_open()
-        generation = self._generation(overrides)
-        prepared_started = time.perf_counter()
-        prepared = self._prepare_text(text)
-        prepared_ms = (time.perf_counter() - prepared_started) * 1000
-        phonemize_started = time.perf_counter()
-        if unit == "sentence":
-            frontend_result = self.voice.frontend.phonemize_prepared(prepared.prepared_text)
-            unit_texts = None
-        elif unit == "paragraph":
-            paragraphs = tuple(
-                part for part in prepared.prepared_text.split("\n\n") if part.strip()
-            )
-            grouped: list[PhonemeSentence] = []
-            diagnostics = None
-            for paragraph in paragraphs:
-                paragraph_result = self.voice.frontend.phonemize_prepared(paragraph)
-                diagnostics = paragraph_result.diagnostics
-                sentences = paragraph_result.sentences
-                if sentences:
-                    grouped.append(
-                        PhonemeSentence(
-                            tuple(phone for sentence in sentences for phone in sentence.phonemes),
-                            tuple(identifier for sentence in sentences for identifier in sentence.ids),
-                            warnings=tuple(
-                                warning for sentence in sentences for warning in sentence.warnings
-                            ),
-                        )
-                    )
-            frontend_result = PhonemizeResult(prepared.prepared_text, tuple(grouped), diagnostics)
-            unit_texts = paragraphs
-        else:
-            raise ValueError("unit must be 'sentence' or 'paragraph'")
-        self._last_timing = {
-            "prepare_text_ms": prepared_ms,
-            "phonemize_ms": (time.perf_counter() - phonemize_started) * 1000,
-        }
-        result = PreparedAudioUnits(
-            self, prepared, frontend_result, generation, unit, unit_texts
+        effective = self._resolve_run_config({**overrides, **({"unit": unit} if unit is not None else {})})
+        plan = self.plan(
+            text,
+            unit=effective.unit,
+            language=effective.language,
+            document_format=effective.document_format,
+            text_preparation=effective.text_preparation,
+            pauses=effective.pauses,
+            linguistics=effective.linguistics,
+            ssmd=effective.ssmd,
+            overlap_mode=effective.overlap_mode,
+            language_aliases=effective.language_aliases,
+            planner_diagnostics=effective.planner_diagnostics,
         )
-        self._prepared.append(result)
-        return result
+        return self.prepare_plan(plan, config=effective)
 
     def iter_units(
         self,
         text: str,
         *,
-        unit: Literal["sentence", "paragraph"] = "sentence",
+        unit: Literal["paragraph", "sentence"] | None = None,
         **overrides: Any,
     ) -> Iterator[AudioUnitResult]:
         prepared = self.prepare_units(text, unit=unit, **overrides)
@@ -281,92 +488,60 @@ class PiperPipeline:
         finally:
             prepared.close()
 
-    def iter_pcm(
-        self,
-        text: str,
-        *,
-        unit: Literal["sentence", "paragraph"] = "sentence",
-        **overrides: Any,
-    ) -> Iterator[bytes]:
-        """Yield mono 16-bit PCM bytes for each prepared audio unit."""
+    def iter_pcm(self, text: str, **overrides: Any) -> Iterator[bytes]:
+        for unit in self.iter_units(text, **overrides):
+            yield unit.audio_int16_bytes
 
-        for unit_result in self.iter_units(text, unit=unit, **overrides):
-            yield unit_result.audio_int16_bytes
-
-    def play_streaming(
-        self,
-        text: str,
-        *,
-        unit: Literal["sentence", "paragraph"] = "sentence",
-        **overrides: Any,
-    ) -> None:
-        """Play synthesized units through the optional sounddevice dependency."""
-
+    def play_streaming(self, text: str, **overrides: Any) -> None:
         try:
             import sounddevice as sd
         except ModuleNotFoundError as exc:
             raise OptionalDependencyError(
                 "Audio playback requires sounddevice. Install pipersynth[playback]."
             ) from exc
-        for unit_result in self.iter_units(text, unit=unit, **overrides):
-            sd.play(unit_result.audio, unit_result.sample_rate, blocking=True)
+        for unit in self.iter_units(text, **overrides):
+            sd.play(unit.audio, unit.sample_rate, blocking=True)
 
-
-    def run(self, text: str, **overrides: Any) -> AudioResult:
-        self._ensure_open()
-        run_started = time.perf_counter()
-        generation = self._generation(overrides)
-        prepared = self.prepare_units(text, **overrides)
-        inference_started = time.perf_counter()
-        try:
-            units = list(prepared.render())
-        finally:
-            prepared.close()
-        inference_ms = (time.perf_counter() - inference_started) * 1000
-        postprocess_started = time.perf_counter()
-        silence_count = silence_samples(self.voice.config.sample_rate, generation.sentence_silence)
-        if not units:
-            audio = np.zeros(0, dtype=np.float32)
-        else:
-            parts: list[np.ndarray] = []
-            silence = np.zeros(silence_count, dtype=np.float32)
-            for index, unit_result in enumerate(units):
-                if index and silence_count:
-                    parts.append(silence)
-                parts.append(unit_result.audio)
-            audio = np.concatenate(parts).astype(np.float32, copy=False)
-        chunks = [
-            AudioChunk(
-                sample_rate=unit.sample_rate,
-                audio_float_array=unit.audio,
-                phonemes=unit.phonemes,
-                phoneme_ids=unit.phoneme_ids,
-                warnings=unit.warnings,
-                metadata=unit.metadata,
+    def _run_phoneme_input(self, phonemes: str, config: PipelineConfig) -> AudioResult:
+        result = self.voice.frontend.phonemize_prepared(f"[[{phonemes}]]")
+        sentences = tuple(getattr(result, "sentences", ()))
+        if not sentences:
+            sentences = tuple(
+                item for item in getattr(result, "tokens", ()) if hasattr(item, "ids")
             )
-            for unit in units
-        ]
-        warnings = tuple(prepared._prepared_text.warnings) + tuple(
-            warning for unit in units for warning in unit.warnings
-        )
-        timing = TimingDiagnostics(
-            prepare_text_ms=self._last_timing.get("prepare_text_ms"),
-            phonemize_ms=self._last_timing.get("phonemize_ms"),
-            inference_ms=inference_ms,
-            postprocess_ms=(time.perf_counter() - postprocess_started) * 1000,
-            total_ms=(time.perf_counter() - run_started) * 1000,
-        )
+        ids = tuple(identifier for sentence in sentences for identifier in sentence.ids)
+        audio = self.voice.synthesize_ids(ids, self._to_synthesis_config(config.generation))
         return AudioResult(
             audio=audio,
             sample_rate=self.voice.config.sample_rate,
-            source_text=text,
-            prepared_text=prepared._prepared_text.prepared_text,
-            chunks=chunks if self.config.retain_unit_audio else [],
-            warnings=warnings,
-            diagnostics=self.voice.diagnostics if self.config.return_diagnostics else None,
-            timing=timing if self.config.return_diagnostics else None,
-            metadata=dict(prepared._prepared_text.metadata),
+            source_text=phonemes,
+            prepared_text=phonemes,
+            warnings=tuple(getattr(result, "warnings", ())),
+            diagnostics=self.voice.diagnostics if config.return_diagnostics else None,
+            metadata={"mode": "phonemes"},
         )
+
+    def run(self, text: str, **overrides: Any) -> AudioResult:
+        self._ensure_open()
+        config = self._resolve_run_config(overrides)
+        if config.generation.is_phonemes:
+            return self._run_phoneme_input(text, config)
+        started = time.perf_counter()
+        plan = self.plan(
+            text,
+            unit=config.unit,
+            language=config.language,
+            document_format=config.document_format,
+            text_preparation=config.text_preparation,
+            pauses=config.pauses,
+            linguistics=config.linguistics,
+            ssmd=config.ssmd,
+            overlap_mode=config.overlap_mode,
+            language_aliases=config.language_aliases,
+            planner_diagnostics=config.planner_diagnostics,
+        )
+        self._last_timing["planning_ms"] = (time.perf_counter() - started) * 1000
+        return self.render_plan(plan, config=config)
 
     def __call__(self, text: str, **overrides: Any) -> AudioResult:
         return self.run(text, **overrides)
@@ -380,6 +555,8 @@ class PiperPipeline:
         for prepared in self._prepared:
             prepared.close()
         self._prepared.clear()
+        if self._planner is not None:
+            self._planner.close()
         if self._voice is not None:
             self._voice.close()
         self._closed = True

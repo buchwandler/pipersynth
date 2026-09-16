@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 
+from ttsplan import LinguisticsConfig, PauseConfig, SSMDConfig
+
 from .audio import write_wav
 from .config import GenerationConfig
 from .pipeline import PiperPipeline
@@ -46,8 +48,13 @@ def synthesize_to_wav(
     offline: bool | None = None,
     refresh_catalog: bool = False,
     force_download: bool = False,
+    document_format: Literal["plain", "ssmd"] = "plain",
     text_preparation: Literal["identity", "spokenform"] = "identity",
     language: str | None = None,
+    unit: Literal["paragraph", "sentence"] = "paragraph",
+    pauses: PauseConfig | None = None,
+    linguistics: LinguisticsConfig | None = None,
+    ssmd: SSMDConfig | None = None,
     progress: Any | None = None,
 ) -> Path:
     """Download or reuse a catalog voice and atomically write a mono PCM WAV."""
@@ -76,8 +83,13 @@ def synthesize_to_wav(
         force_download=force_download,
         generation=generation,
         providers=providers,
+        document_format=document_format,
         text_preparation=text_preparation,
         language=language,
+        unit=unit,
+        pauses=pauses,
+        linguistics=linguistics,
+        ssmd=ssmd,
         progress=progress,
     ) as pipeline:
         result = pipeline.run(text)
@@ -101,8 +113,13 @@ def synthesize(
     offline: bool | None = None,
     refresh_catalog: bool = False,
     force_download: bool = False,
+    document_format: Literal["plain", "ssmd"] = "plain",
     text_preparation: Literal["identity", "spokenform"] = "identity",
     language: str | None = None,
+    unit: Literal["paragraph", "sentence"] = "paragraph",
+    pauses: PauseConfig | None = None,
+    linguistics: LinguisticsConfig | None = None,
+    ssmd: SSMDConfig | None = None,
     progress: Any | None = None,
 ) -> Any:
     """Synthesize an in-memory AudioResult with a managed catalog voice."""
@@ -124,8 +141,13 @@ def synthesize(
         force_download=force_download,
         generation=generation,
         providers=providers,
+        document_format=document_format,
         text_preparation=text_preparation,
         language=language,
+        unit=unit,
+        pauses=pauses,
+        linguistics=linguistics,
+        ssmd=ssmd,
         progress=progress,
     ) as pipeline:
         return pipeline.run(text)

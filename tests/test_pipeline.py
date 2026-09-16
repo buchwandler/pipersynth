@@ -65,7 +65,7 @@ def test_pipeline_is_lazy_reusable_and_supports_run_and_call():
     assert first.source_text == "ab|ba"
     assert first.prepared_text == "ab|ba"
     assert first.audio.shape == (4,)
-    assert len(voices[0].calls) == 3
+    assert len(voices[0].calls) == 2
     assert pipeline.config.generation.volume == 1.0
     assert second.audio.shape == (2,)
 
@@ -74,11 +74,11 @@ def test_pipeline_iter_units_has_stable_indices_and_skip_support():
     voice = FakeVoice()
     pipeline = PiperPipeline(PipelineConfig("voice.onnx"), voice_factory=lambda config: voice)
     with pipeline.prepare_units("ab|ba|ab") as prepared:
-        assert [unit.index for unit in prepared.units] == [0, 1, 2]
+        assert [unit.index for unit in prepared.units] == [0]
         rendered = list(prepared.render(skip_indices=(1,)))
-    assert [unit.descriptor.index for unit in rendered] == [0, 2]
+    assert [unit.descriptor.index for unit in rendered] == [0]
     streamed = list(pipeline.iter_units("ab|ba"))
-    assert [unit.descriptor.index for unit in streamed] == [0, 1]
+    assert [unit.descriptor.index for unit in streamed] == [0]
 
 
 def test_pipeline_warmup_and_close_are_idempotent():
