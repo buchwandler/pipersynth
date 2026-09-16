@@ -26,23 +26,19 @@ class SessionCreationError(ModelLoadError):
 
 
 class PlanRenderingError(PiperSynthError):
-    """A TTSPlan could not be rendered by the active Piper voice."""
-
+    """An UtterancePlan could not be rendered by the active Piper voice."""
 
 
 class UnsupportedPlanLanguageError(PlanRenderingError):
     """A plan segment language is unsupported by the active Piper voice."""
 
 
-
 class UnsupportedPlanDirectiveError(PlanRenderingError):
     """A plan directive is unsupported by PiperSynth."""
 
 
-
 class VoiceBindingError(PlanRenderingError):
     """A logical plan voice cannot be bound to the active Piper voice."""
-
 
 
 class PlanSampleRateMismatchError(PlanRenderingError):
@@ -75,6 +71,7 @@ class TextPreparationError(PiperSynthError):
 
 class OptionalDependencyError(PiperSynthError, ImportError):
     """An optional feature was requested without its dependency installed."""
+
 
 class AssetError(PiperSynthError):
     """Base class for managed voice asset failures."""

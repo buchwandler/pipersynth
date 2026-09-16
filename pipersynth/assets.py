@@ -37,7 +37,10 @@ class VoiceMetadata:
             region=str(region) if region is not None else None,
             quality=str(entry["quality"]),
             num_speakers=int(entry["num_speakers"]),
-            speaker_id_map={str(name): int(identifier) for name, identifier in dict(entry.get("speaker_id_map", {})).items()},
+            speaker_id_map={
+                str(name): int(identifier)
+                for name, identifier in dict(entry.get("speaker_id_map", {})).items()
+            },
             aliases=tuple(str(alias) for alias in entry.get("aliases", ())),
             source_revision=source_revision,
         )
@@ -88,7 +91,7 @@ def load_catalog_voice(
     cache_dir: str | Path,
     catalog_path: str | Path,
     download: bool = False,
- ) -> VoiceBundle:
+) -> VoiceBundle:
     """Resolve a voice from a local catalog, downloading only when explicitly requested."""
 
     try:

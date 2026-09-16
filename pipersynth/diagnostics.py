@@ -22,8 +22,8 @@ class RuntimeDiagnostics:
     model_outputs: tuple[str, ...] = ()
     frontend: str | None = None
     plan_id: str | None = None
-    ttsplan_producer: dict[str, Any] | None = None
-    ttsplan_schema_version: int | None = None
+    utterplan_producer: dict[str, Any] | None = None
+    utterplan_schema_version: int | None = None
     voice_id: str | None = None
     voice_source_revision: str | None = None
     warnings: tuple[str, ...] = ()
@@ -37,7 +37,6 @@ class RuntimeDiagnostics:
 @dataclass(frozen=True, slots=True)
 class TimingDiagnostics:
     """Optional stable timing measurements in milliseconds."""
-
 
     planning_ms: float | None = None
     g2p_ms: float | None = None

@@ -12,8 +12,8 @@ license = {text = "Apache-2.0"}
 authors = [{name = "PiperSynth contributors"}]
 dependencies = [
   "numpy>=1.23",
+  "utterplan>=0.1,<0.2",
   "piperg2p",
-  "ttsplan>=0.1,<0.2",
   "platformdirs>=4,<5",
 ]
 keywords = ["tts", "text-to-speech", "piper", "onnx", "speech", "onnxruntime"]

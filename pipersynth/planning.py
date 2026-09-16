@@ -5,14 +5,14 @@ from pathlib import Path
 from typing import Literal
 
 from piperg2p import VoiceConfig
-from ttsplan import (
+from utterplan import (
     LinguisticsConfig,
     PauseConfig,
     PlannerConfig,
     SSMDConfig,
     normalize_language,
 )
-from ttsplan.exceptions import ConfigurationError
+from utterplan.exceptions import ConfigurationError
 
 from .config import PipelineConfig
 from .errors import ConfigFileNotFoundError
@@ -30,7 +30,11 @@ class ResolvedVoiceMetadata:
 def inspect_voice_config(config: PipelineConfig) -> ResolvedVoiceMetadata:
     """Read local Piper metadata without creating an ONNX session."""
 
-    config_path = Path(config.config_path) if config.config_path is not None else Path(f"{config.model_path}.json")
+    config_path = (
+        Path(config.config_path)
+        if config.config_path is not None
+        else Path(f"{config.model_path}.json")
+    )
     if not config_path.exists():
         raise ConfigFileNotFoundError(f"Voice config file does not exist: {config_path}")
     voice_config = VoiceConfig.from_json(config_path)
@@ -48,7 +52,7 @@ def planner_config_from_pipersynth(
     language: str | None = None,
     unit: Literal["paragraph", "sentence"] | None = None,
 ) -> PlannerConfig:
-    """Map PiperSynth's public planner settings to TTSPlan configuration."""
+    """Map PiperSynth's public planner settings to UtterPlan configuration."""
 
     resolved_language = language or config.language
     if not resolved_language:

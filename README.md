@@ -43,17 +43,28 @@ with PiperPipeline.from_pretrained("en_US-lessac-medium", offline=True) as pipe:
 
 ## Planning and rendering
 
-`PiperPipeline.plan()` compiles text into an immutable `TTSPlan`. The planner owns document parsing, Spokenform, SSMD, language runs, semantic units, markers, and resolved pauses. Rendering an existing plan never replans it, so the same plan can be rendered repeatedly with different acoustic overrides:
+`PiperPipeline.plan()` compiles text into an immutable `UtterancePlan`. The UtterPlan planner owns document parsing, Spokenform, SSMD, language runs, semantic units, markers, and resolved pauses. Rendering an existing plan never replans it, so the same plan can be rendered repeatedly with different acoustic overrides:
 
 ```python
 with PiperPipeline.from_pretrained("en_US-lessac-medium") as pipe:
     plan = pipe.plan("One. Two.", unit="sentence")
-    plan.save("speech.ttsplan.json")
+    plan.save("speech.utterplan.json")
     normal = pipe.render_plan(plan, length_scale=1.0)
     fast = pipe.render_plan(plan, length_scale=0.9)
 ```
 
-Use `is_phonemes=True` only for direct Piper phoneme input. It bypasses TTSPlan and does not attach a semantic plan to the result.
+## Runnable examples
+
+The maintained examples use catalog voices and require no manual model download.
+They explicitly create and persist an `UtterancePlan` before rendering it. Generated plans
+and WAV files are written below `example-artefacts/`. See [`examples/README.md`](examples/README.md).
+
+```bash
+python examples/basic.py
+python examples/run_all.py
+```
+
+Use `is_phonemes=True` only for direct Piper phoneme input. It bypasses UtterPlan and does not attach a semantic plan to the result.
 
 ## Local models
 
@@ -106,8 +117,8 @@ pipersynth voice.onnx "Hello world." -o hello.wav
 
 ## Optional features
 
-The TTSPlan dependency provides Spokenform and SSMD planning. Install `pipersynth[playback]` for `AudioResult.play()` and streaming playback, or `pipersynth[gpu]` for GPU ONNX Runtime. Catalog support is included in the CPU and GPU extras and is also available as `pipersynth[catalog]`.
+The UtterPlan dependency provides Spokenform and SSMD planning. Install `pipersynth[playback]` for `AudioResult.play()` and streaming playback, or `pipersynth[gpu]` for GPU ONNX Runtime. Catalog support is included in the CPU and GPU extras and is also available as `pipersynth[catalog]`.
 
-The core API supports sentence and paragraph units through TTSPlan, resolved semantic pauses, plan save/load, and PCM iteration through `iter_pcm()`. It does not claim generic voice blending, approximate word timings, hidden language detection, model conversion, training, quantization, or HTTP serving.
+The core API supports sentence and paragraph units through UtterPlan, resolved semantic pauses, plan save/load, and PCM iteration through `iter_pcm()`. It does not claim generic voice blending, approximate word timings, hidden language detection, model conversion, training, quantization, or HTTP serving.
 
 See [`docs/architecture.md`](docs/architecture.md), [`docs/providers.md`](docs/providers.md), [`docs/troubleshooting.md`](docs/troubleshooting.md), and [`examples/download_and_synthesize.py`](examples/download_and_synthesize.py).

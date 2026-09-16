@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Literal
 
 import numpy as np
-from ttsplan import TTSPlan
+from utterplan import UtterancePlan
 
 from .audio import audio_to_int16_bytes, float_to_int16, write_wav
 from .diagnostics import RuntimeDiagnostics, TimingDiagnostics
@@ -147,7 +147,7 @@ class AudioResult:
     sample_rate: int
     source_text: str
     prepared_text: str
-    plan: TTSPlan | None = None
+    plan: UtterancePlan | None = None
     plan_id: str | None = None
     chunks: list[AudioChunk] = field(default_factory=list)
     markers: list[dict[str, Any]] = field(default_factory=list)
@@ -249,6 +249,7 @@ class AudioUnitResult:
     @property
     def duration_seconds(self) -> float:
         return self.audio.size / self.sample_rate
+
     def play(self, *, wait: bool = True) -> None:
         """Play this unit using the optional sounddevice dependency."""
 
@@ -259,7 +260,6 @@ class AudioUnitResult:
                 "Audio playback requires sounddevice. Install pipersynth[playback]."
             ) from exc
         sd.play(self.audio, self.sample_rate, blocking=wait)
-
 
     def release_audio(self) -> None:
         self.audio = np.zeros(0, dtype=np.float32)

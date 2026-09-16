@@ -31,11 +31,19 @@ def _legacy_parser() -> argparse.ArgumentParser:
     parser.add_argument("--noise-w", type=float, default=None, help="Deprecated noise width alias")
     parser.add_argument("--sentence-silence", type=float, default=0.0)
     parser.add_argument("--volume", type=float, default=1.0)
-    parser.add_argument("--provider", action="append", default=None, help="ONNX provider; repeat for priority")
-    parser.add_argument("--language", default=None, help="Language for optional written-text preparation")
+    parser.add_argument(
+        "--provider", action="append", default=None, help="ONNX provider; repeat for priority"
+    )
+    parser.add_argument(
+        "--language", default=None, help="Language for optional written-text preparation"
+    )
     preparation = parser.add_mutually_exclusive_group()
-    preparation.add_argument("--prepare-text", action="store_true", help="Use spokenform preparation")
-    preparation.add_argument("--no-prepare-text", action="store_true", help="Use identity preparation")
+    preparation.add_argument(
+        "--prepare-text", action="store_true", help="Use spokenform preparation"
+    )
+    preparation.add_argument(
+        "--no-prepare-text", action="store_true", help="Use identity preparation"
+    )
     parser.add_argument("--no-normalize", action="store_true")
     return parser
 
@@ -149,7 +157,11 @@ def _run_managed(args: argparse.Namespace) -> None:
         elif args.voice_command == "remove":
             manager.remove_voice(args.voice)
         elif args.voice_command == "license":
-            print(manager.resolve_voice(args.voice, refresh_catalog=args.refresh_catalog).model_card_text)
+            print(
+                manager.resolve_voice(
+                    args.voice, refresh_catalog=args.refresh_catalog
+                ).model_card_text
+            )
         return
     if args.command == "speak":
         output = synthesize_to_wav(

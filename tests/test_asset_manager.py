@@ -39,7 +39,9 @@ def _fake_catalog() -> tuple[dict, dict[str, bytes]]:
     return {"source": {"revision": "a" * 40}, "voices": {entry["id"]: entry}}, files
 
 
-def _manager(tmp_path: Path, *, offline: bool = False, progress=None) -> tuple[VoiceAssetManager, dict, dict[str, bytes]]:
+def _manager(
+    tmp_path: Path, *, offline: bool = False, progress=None
+) -> tuple[VoiceAssetManager, dict, dict[str, bytes]]:
     catalog, files = _fake_catalog()
     manager = VoiceAssetManager(tmp_path, offline=offline, progress=progress)
     manager.catalog_path.parent.mkdir(parents=True)
@@ -104,9 +106,11 @@ def test_force_download_overwrites_even_valid_cache(tmp_path: Path) -> None:
     calls = []
     original = manager._catalog_dependency
     dependencies = original()
+
     def download(*args, **kwargs):
         calls.append(True)
         return dependencies[2](*args, **kwargs)
+
     manager._catalog_dependency = lambda: (*dependencies[:2], download, *dependencies[3:])
     manager.resolve_voice("test", force_download=True)
     assert calls == [True]
@@ -140,7 +144,9 @@ def test_download_errors_are_wrapped(tmp_path: Path) -> None:
         RuntimeError,
         fail,
         lambda: _fake_catalog()[0],
-        lambda catalog, voice: catalog["voices"]["en_US-test-medium"] if voice == "test" else catalog["voices"][voice],
+        lambda catalog, voice: (
+            catalog["voices"]["en_US-test-medium"] if voice == "test" else catalog["voices"][voice]
+        ),
         lambda catalog, **kwargs: list(catalog["voices"].values()),
         lambda path: _fake_catalog()[0],
     )

@@ -15,7 +15,9 @@ class InferenceOutput(Protocol):
 
 
 class InferenceSession(Protocol):
-    def run(self, output_names: Sequence[str] | None, input_feed: Mapping[str, np.ndarray]) -> Sequence[Any]: ...
+    def run(
+        self, output_names: Sequence[str] | None, input_feed: Mapping[str, np.ndarray]
+    ) -> Sequence[Any]: ...
 
     def get_inputs(self) -> Sequence[InferenceInput]: ...
 

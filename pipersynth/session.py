@@ -142,7 +142,9 @@ class OnnxSessionManager:
         try:
             self._session = factory(str(self.model_path), **kwargs)
         except Exception as exc:
-            raise SessionCreationError(f"Could not create ONNX session for {self.model_path}") from exc
+            raise SessionCreationError(
+                f"Could not create ONNX session for {self.model_path}"
+            ) from exc
         self._read_metadata()
         self.validate_contract(require_sid=require_sid)
         return self._session

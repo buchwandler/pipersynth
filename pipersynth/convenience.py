@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 
-from ttsplan import LinguisticsConfig, PauseConfig, SSMDConfig
+from utterplan import LinguisticsConfig, PauseConfig, SSMDConfig
 
 from .audio import write_wav
 from .config import GenerationConfig

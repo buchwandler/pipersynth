@@ -19,6 +19,7 @@ def normalize_catalog_language_for_spokenform(code: str) -> str:
         raise ValueError("catalog language code must not be empty")
     return normalized
 
+
 @dataclass(frozen=True, slots=True)
 class PreparedTextResult:
     """Text preparation output with source provenance and diagnostics."""
@@ -67,7 +68,9 @@ class SpokenformTextPreparer:
         else:
             config = None
         protected_spans = tuple(
-            SimpleNamespace(start=match.start(), end=match.end(), kind="piper_raw_phoneme", source="pipersynth")
+            SimpleNamespace(
+                start=match.start(), end=match.end(), kind="piper_raw_phoneme", source="pipersynth"
+            )
             for match in _RAW_BLOCK_RE.finditer(text)
         )
         try:

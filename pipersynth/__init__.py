@@ -1,7 +1,14 @@
 """Independent synthesis runtime for Piper-compatible ONNX voice models."""
 
 from piperg2p import VoiceConfig
-from ttsplan import LinguisticsConfig, PauseConfig, SSMDConfig, TTSPlan, TTSPlanner
+from utterplan import (
+    LinguisticsConfig,
+    PauseConfig,
+    PlannerConfig,
+    SSMDConfig,
+    UtterancePlan,
+    UtterancePlanner,
+)
 
 from ._version import __version__
 from .asset_manager import CacheInfo, VoiceAssetManager, list_cached_voices, list_voices
@@ -55,9 +62,10 @@ __all__ = [
     "GenerationConfig",
     "LinguisticsConfig",
     "PauseConfig",
+    "PlannerConfig",
     "SSMDConfig",
-    "TTSPlan",
-    "TTSPlanner",
+    "UtterancePlan",
+    "UtterancePlanner",
     "CacheInfo",
     "VoiceAssetManager",
     "CatalogUnavailableError",

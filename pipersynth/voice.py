@@ -184,7 +184,9 @@ class PiperVoice:
                 value = self.config.speaker_id_map[value]
             except KeyError as exc:
                 names = ", ".join(sorted(self.config.speaker_id_map)) or "none"
-                raise InvalidSpeakerError(f"unknown speaker {value!r}; known speakers: {names}") from exc
+                raise InvalidSpeakerError(
+                    f"unknown speaker {value!r}; known speakers: {names}"
+                ) from exc
         if not isinstance(value, int):
             raise InvalidSpeakerError("speaker ID must be an integer, name, or None")
         if self.config.num_speakers == 1:
@@ -202,7 +204,9 @@ class PiperVoice:
             [
                 self.config.noise_scale if syn.noise_scale is None else syn.noise_scale,
                 self.config.length_scale if syn.length_scale is None else syn.length_scale,
-                self.config.noise_w_scale if syn.resolved_noise_w_scale is None else syn.resolved_noise_w_scale,
+                self.config.noise_w_scale
+                if syn.resolved_noise_w_scale is None
+                else syn.resolved_noise_w_scale,
             ],
             dtype=np.float32,
         )

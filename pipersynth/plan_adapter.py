@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from ttsplan import PlanSegment, TTSPlan, normalize_language
+from utterplan import PlanSegment, UtterancePlan, normalize_language
 
 from .config import GenerationConfig
 from .errors import (
@@ -70,7 +70,7 @@ def _active_voice_id(voice: Any) -> str:
 
 
 def _resolve_voice_speaker(
-    plan: TTSPlan,
+    plan: UtterancePlan,
     segment: PlanSegment,
     voice: Any,
     generation: GenerationConfig,
@@ -79,7 +79,11 @@ def _resolve_voice_speaker(
     if requested is None:
         return voice.resolve_speaker_id(generation.speaker)
     bindings = plan.document_metadata.get("voice_bindings", {})
-    target = bindings.get(requested.reference, requested.reference) if isinstance(bindings, Mapping) else requested.reference
+    target = (
+        bindings.get(requested.reference, requested.reference)
+        if isinstance(bindings, Mapping)
+        else requested.reference
+    )
     active_id = _active_voice_id(voice)
     speaker = generation.speaker
     if target == active_id or target in {"active", "current"}:
@@ -92,9 +96,13 @@ def _resolve_voice_speaker(
     )
 
 
-def _check_language(plan: TTSPlan, segment: PlanSegment, voice: Any, aliases: Mapping[str, str]) -> str:
+def _check_language(
+    plan: UtterancePlan, segment: PlanSegment, voice: Any, aliases: Mapping[str, str]
+) -> str:
     language = normalize_language(segment.language, dict(aliases))
-    voice_language = normalize_language(str(getattr(voice.config, "espeak_voice", "")), dict(aliases))
+    voice_language = normalize_language(
+        str(getattr(voice.config, "espeak_voice", "")), dict(aliases)
+    )
     if language != voice_language:
         raise UnsupportedPlanLanguageError(
             f"plan segment {segment.id} uses language {language!r}, but voice "
@@ -104,7 +112,7 @@ def _check_language(plan: TTSPlan, segment: PlanSegment, voice: Any, aliases: Ma
 
 
 def _segment_synthesis(
-    plan: TTSPlan,
+    plan: UtterancePlan,
     segment: PlanSegment,
     voice: Any,
     generation: GenerationConfig,
@@ -124,7 +132,9 @@ def _segment_synthesis(
                 base = length_scale if length_scale is not None else voice.config.length_scale
                 length_scale = base / rate
             except (TypeError, ValueError):
-                warning = _policy_issue(directive_policy, f"unsupported prosody rate {prosody.rate!r}")
+                warning = _policy_issue(
+                    directive_policy, f"unsupported prosody rate {prosody.rate!r}"
+                )
                 if warning:
                     warnings.append(warning)
         if prosody.volume is not None:
@@ -134,11 +144,15 @@ def _segment_synthesis(
                     raise ValueError
                 volume *= segment_volume
             except (TypeError, ValueError):
-                warning = _policy_issue(directive_policy, f"unsupported prosody volume {prosody.volume!r}")
+                warning = _policy_issue(
+                    directive_policy, f"unsupported prosody volume {prosody.volume!r}"
+                )
                 if warning:
                     warnings.append(warning)
         if prosody.pitch is not None:
-            warning = _policy_issue(directive_policy, "PiperSynth does not support pitch directives")
+            warning = _policy_issue(
+                directive_policy, "PiperSynth does not support pitch directives"
+            )
             if warning:
                 warnings.append(warning)
     if segment.directives.emphasis is not None:
@@ -146,7 +160,9 @@ def _segment_synthesis(
         if warning:
             warnings.append(warning)
     if segment.directives.audio is not None:
-        warning = _policy_issue(directive_policy, "PiperSynth does not support external audio directives")
+        warning = _policy_issue(
+            directive_policy, "PiperSynth does not support external audio directives"
+        )
         if warning:
             warnings.append(warning)
     return (
@@ -162,7 +178,7 @@ def _segment_synthesis(
     )
 
 
-def _token_annotations(plan: TTSPlan, segment: PlanSegment) -> tuple[dict[str, Any], ...]:
+def _token_annotations(plan: UtterancePlan, segment: PlanSegment) -> tuple[dict[str, Any], ...]:
     result = []
     for index in segment.token_indices:
         token = plan.tokens[index]
@@ -180,6 +196,8 @@ def _token_annotations(plan: TTSPlan, segment: PlanSegment) -> tuple[dict[str, A
             }
         )
     return tuple(result)
+
+
 def _sentences(result: Any) -> tuple[Any, ...]:
     sentences = tuple(getattr(result, "sentences", ()))
     if not sentences:
@@ -187,7 +205,6 @@ def _sentences(result: Any) -> tuple[Any, ...]:
         if legacy and all(hasattr(item, "ids") for item in legacy):
             return legacy
     return sentences
-
 
 
 def _phonemize(frontend: Any, text: str, annotations: tuple[dict[str, Any], ...]) -> Any:
@@ -199,15 +216,14 @@ def _phonemize(frontend: Any, text: str, annotations: tuple[dict[str, Any], ...]
     return frontend.phonemize_prepared(text)
 
 
-
 def prepare_plan(
-    plan: TTSPlan,
+    plan: UtterancePlan,
     voice: Any,
     generation: GenerationConfig,
     *,
     directive_policy: Literal["error", "warn", "ignore"] = "error",
     language_policy: Literal["strict", "allow"] = "strict",
-    language_aliases: Mapping[str, str] | None = None
+    language_aliases: Mapping[str, str] | None = None,
 ) -> tuple[PreparedPiperUnit, ...]:
     """Adapt a validated semantic plan into renderer-local Piper records."""
 
@@ -239,15 +255,15 @@ def prepare_plan(
             if pronunciation is not None:
                 result = voice.frontend.phonemize_prepared(f"[[{pronunciation.phonemes}]]")
             else:
-                result = _phonemize(
-                    voice.frontend, segment.text, _token_annotations(plan, segment)
-                )
+                result = _phonemize(voice.frontend, segment.text, _token_annotations(plan, segment))
             sentences = _sentences(result)
             phonemes = tuple(phone for sentence in sentences for phone in sentence.phonemes)
             phoneme_ids = tuple(identifier for sentence in sentences for identifier in sentence.ids)
-            warnings = tuple(directive_warnings) + tuple(
-                warning for sentence in sentences for warning in sentence.warnings
-            ) + tuple(getattr(result, "warnings", ()))
+            warnings = (
+                tuple(directive_warnings)
+                + tuple(warning for sentence in sentences for warning in sentence.warnings)
+                + tuple(getattr(result, "warnings", ()))
+            )
             prepared_segments.append(
                 PreparedPiperSegment(
                     plan_segment_id=segment.id,

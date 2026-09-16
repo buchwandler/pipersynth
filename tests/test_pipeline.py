@@ -8,9 +8,7 @@ from pipersynth.pipeline import PiperPipeline
 
 class FakeFrontend:
     def phonemize_prepared(self, text):
-        sentences = tuple(
-            PhonemeSentence(tuple(part), (1, 2)) for part in text.split("|") if part
-        )
+        sentences = tuple(PhonemeSentence(tuple(part), (1, 2)) for part in text.split("|") if part)
         return PhonemizeResult(text, sentences)
 
 

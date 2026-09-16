@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from piperg2p import PhonemeSentence, PhonemizeResult, VoiceConfig
-from ttsplan import PauseConfig, PlanValidationError
+from utterplan import PauseConfig, PlanValidationError
 
 from pipersynth import PiperPipeline
 from pipersynth.config import GenerationConfig, PipelineConfig
@@ -26,7 +26,6 @@ def test_planner_config_mapping_and_legacy_pause() -> None:
     assert planner.text_preparation == "spokenform"
     assert planner.unit == "sentence"
     assert planner.pauses.sentence == 0.2
-
 
 
 class FakeFrontend:
@@ -76,11 +75,13 @@ class FakeVoice:
         pass
 
 
-def make_pipeline(voice: FakeVoice | None = None, **config_kwargs: object) -> tuple[PiperPipeline, FakeVoice]:
+def make_pipeline(
+    voice: FakeVoice | None = None, **config_kwargs: object
+) -> tuple[PiperPipeline, FakeVoice]:
     active = voice or FakeVoice()
     pipeline = PiperPipeline(
         PipelineConfig("voice.onnx", language="en-us", **config_kwargs),
-        voice_factory=lambda _config: active
+        voice_factory=lambda _config: active,
     )
     return pipeline, active
 
@@ -95,9 +96,23 @@ def test_plan_is_lazy_and_render_plan_does_not_replan() -> None:
     assert result.plan_id == plan.plan_id
     assert result.diagnostics is not None
     assert result.diagnostics.plan_id == plan.plan_id
-    assert result.metadata["ttsplan_schema_version"] == plan.schema_version
+    assert result.metadata["utterplan_schema_version"] == plan.schema_version
+    assert result.metadata["utterplan_producer"]["name"] == "utterplan"
+    assert result.diagnostics.utterplan_schema_version == plan.schema_version
+    assert result.diagnostics.utterplan_producer["name"] == "utterplan"
     assert voice.frontend.calls[0][0] == plan.segments[0].text
     pipeline.close()
+
+
+def test_pipeline_plan_uses_utterplan_identity() -> None:
+    pipeline, _voice = make_pipeline()
+    plan = pipeline.plan("ab")
+    payload = plan.to_dict()
+    assert payload["format"] == "utterplan"
+    assert payload["producer"]["name"] == "utterplan"
+    pipeline.close()
+
+
 def test_pronunciation_directive_uses_raw_piper_path() -> None:
     pipeline, voice = make_pipeline(document_format="ssmd", text_preparation="spokenform")
     plan = pipeline.plan('[tomato]{ph="təˈmeɪtoʊ"}')
@@ -124,8 +139,6 @@ def test_resolved_sentence_pause_is_rendered_once() -> None:
     result = pipeline.render_plan(plan)
     assert result.audio.size == 10
     pipeline.close()
-
-
 
 
 def test_plan_units_define_streaming_groups() -> None:
@@ -158,9 +171,7 @@ def test_render_plan_rejects_planning_overrides() -> None:
 def test_raw_blocks_remain_explicit_with_spokenform() -> None:
     voice = FakeVoice()
     pipeline = PiperPipeline(
-        PipelineConfig(
-            "voice.onnx", language="en-us", text_preparation="spokenform"
-        ),
+        PipelineConfig("voice.onnx", language="en-us", text_preparation="spokenform"),
         voice_factory=lambda _config: voice,
     )
     plan = pipeline.plan("Use 2 kg [[ tɛst ]] and 3 kg.")

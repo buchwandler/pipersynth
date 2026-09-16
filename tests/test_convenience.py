@@ -51,7 +51,9 @@ def test_synthesize_to_wav_forwards_options_and_closes(tmp_path: Path, monkeypat
 
 def test_failed_save_does_not_leave_temporary_output(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(convenience, "PiperPipeline", FakePipeline)
-    monkeypatch.setattr(convenience, "write_wav", lambda *args: (_ for _ in ()).throw(RuntimeError("bad")))
+    monkeypatch.setattr(
+        convenience, "write_wav", lambda *args: (_ for _ in ()).throw(RuntimeError("bad"))
+    )
     output = tmp_path / "failure.wav"
     try:
         convenience.synthesize_to_wav("hello", output, voice="test")

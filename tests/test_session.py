@@ -42,7 +42,10 @@ def test_explicit_providers_and_options_are_preserved(tmp_path: Path) -> None:
 
     manager = OnnxSessionManager(
         model_file(tmp_path),
-        providers=["CUDAExecutionProvider", ("CPUExecutionProvider", {"arena_extend_strategy": "kNextPowerOfTwo"})],
+        providers=[
+            "CUDAExecutionProvider",
+            ("CPUExecutionProvider", {"arena_extend_strategy": "kNextPowerOfTwo"}),
+        ],
         session_options="options",
         session_factory=factory,
     )
@@ -62,7 +65,9 @@ def test_explicit_providers_and_options_are_preserved(tmp_path: Path) -> None:
 
 
 def test_default_provider_is_cpu(tmp_path: Path) -> None:
-    manager = OnnxSessionManager(model_file(tmp_path), session_factory=lambda path, **kwargs: FakeSession())
+    manager = OnnxSessionManager(
+        model_file(tmp_path), session_factory=lambda path, **kwargs: FakeSession()
+    )
     assert manager.providers_requested == ("CPUExecutionProvider",)
 
 
@@ -76,7 +81,9 @@ def test_required_inputs_and_extra_inputs_are_rejected(tmp_path: Path) -> None:
 
     extra = OnnxSessionManager(
         model_file(tmp_path),
-        session_factory=lambda path, **kwargs: FakeSession(("input", "input_lengths", "scales", "extra")),
+        session_factory=lambda path, **kwargs: FakeSession(
+            ("input", "input_lengths", "scales", "extra")
+        ),
     )
     with pytest.raises(UnsupportedModelError, match="extra"):
         extra.create()

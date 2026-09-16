@@ -19,7 +19,9 @@ def test_spokenform_adapter_preserves_raw_phoneme_blocks() -> None:
 
     def fake_prepare(text, **kwargs):
         seen.extend(kwargs["protected_spans"])
-        return SimpleNamespace(spoken_text="spoken " + text, warnings=("warning",), to_dict=lambda: {"ok": True})
+        return SimpleNamespace(
+            spoken_text="spoken " + text, warnings=("warning",), to_dict=lambda: {"ok": True}
+        )
 
     result = SpokenformTextPreparer(fake_prepare).prepare("Say [[ h e l l o ]]", language="en")
     assert result.source_text == "Say [[ h e l l o ]]"

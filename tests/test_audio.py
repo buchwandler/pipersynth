@@ -10,7 +10,11 @@ from pipersynth.errors import ModelInferenceError
 
 
 def test_pcm_conversion_clips_and_maps_normalized_values() -> None:
-    assert float_to_int16(np.array([-1.0, 0.0, 1.0], dtype=np.float32)).tolist() == [-32767, 0, 32767]
+    assert float_to_int16(np.array([-1.0, 0.0, 1.0], dtype=np.float32)).tolist() == [
+        -32767,
+        0,
+        32767,
+    ]
     assert float_to_int16(np.array([-2.0, 2.0], dtype=np.float32)).tolist() == [-32767, 32767]
 
 

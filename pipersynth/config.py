@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
-from ttsplan import LinguisticsConfig, PauseConfig, SSMDConfig
+from utterplan import LinguisticsConfig, PauseConfig, SSMDConfig
 
 from .errors import InvalidSynthesisConfigError
 from .session import ProviderConfig, ProviderSpec
@@ -44,7 +44,7 @@ class GenerationConfig:
             raise InvalidSynthesisConfigError("is_phonemes must be a bool")
         if self.sentence_silence:
             warnings.warn(
-                "sentence_silence is deprecated; configure semantic pauses through TTSPlan",
+                "sentence_silence is deprecated; configure semantic pauses through UtterPlan",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -84,6 +84,7 @@ class PipelineConfig:
 
     retain_unit_audio: bool = False
     return_diagnostics: bool = True
+
     def __post_init__(self) -> None:
         if self.document_format not in {"plain", "ssmd"}:
             raise ValueError("document_format must be 'plain' or 'ssmd'")

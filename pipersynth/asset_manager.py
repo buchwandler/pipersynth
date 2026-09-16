@@ -92,11 +92,22 @@ class VoiceAssetManager:
         progress: AssetProgressCallback | None = None,
     ) -> None:
         configured_cache = cache_dir or os.environ.get("PIPERSYNTH_CACHE_DIR")
-        self.cache_dir = Path(configured_cache) if configured_cache else user_cache_path("pipersynth")
-        self.catalog_path = Path(catalog_path) if catalog_path is not None else self.cache_dir / "catalog" / "voices.json"
+        self.cache_dir = (
+            Path(configured_cache) if configured_cache else user_cache_path("pipersynth")
+        )
+        self.catalog_path = (
+            Path(catalog_path)
+            if catalog_path is not None
+            else self.cache_dir / "catalog" / "voices.json"
+        )
         self._explicit_catalog = catalog_path is not None
         if offline is None:
-            offline = os.environ.get("PIPERSYNTH_OFFLINE", "").casefold() in {"1", "true", "yes", "on"}
+            offline = os.environ.get("PIPERSYNTH_OFFLINE", "").casefold() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
         self.offline = offline
         self.progress = progress
 
@@ -147,14 +158,18 @@ class VoiceAssetManager:
             except OptionalDependencyError:
                 raise
             except Exception as exc:
-                raise AssetCacheError(f"Cached Piper voice catalog is invalid: {self.catalog_path}") from exc
+                raise AssetCacheError(
+                    f"Cached Piper voice catalog is invalid: {self.catalog_path}"
+                ) from exc
             if emit:
                 self._emit("catalog-load", message="Loaded cached Piper voice catalog")
             return catalog
         if self._explicit_catalog:
             if self.offline:
                 raise OfflineAssetError(f"Piper voice catalog is not cached: {self.catalog_path}")
-            raise CatalogUnavailableError(f"Piper voice catalog does not exist: {self.catalog_path}")
+            raise CatalogUnavailableError(
+                f"Piper voice catalog does not exist: {self.catalog_path}"
+            )
         if self.offline:
             raise OfflineAssetError("Piper voice catalog is not cached and offline mode is enabled")
         self._refresh_catalog()
@@ -172,11 +187,15 @@ class VoiceAssetManager:
         target = self.catalog_path
         target.parent.mkdir(parents=True, exist_ok=True)
         with asset_lock(self.cache_dir / "locks" / "catalog.lock"):
-            descriptor, temporary_name = tempfile.mkstemp(prefix="voices.", suffix=".tmp", dir=target.parent)
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix="voices.", suffix=".tmp", dir=target.parent
+            )
             os.close(descriptor)
             temporary = Path(temporary_name)
             try:
-                temporary.write_text(json.dumps(catalog, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+                temporary.write_text(
+                    json.dumps(catalog, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8"
+                )
                 temporary.replace(target)
             finally:
                 temporary.unlink(missing_ok=True)
@@ -234,7 +253,10 @@ class VoiceAssetManager:
             bundle = VoiceBundle.from_directory(target, metadata=metadata)
         except Exception as exc:
             raise AssetCacheError(f"Cached Piper voice is invalid: {target}") from exc
-        expected = {entry["filename"]: entry for entry in self._voice_entry(metadata.id)["artifacts"].values()}
+        expected = {
+            entry["filename"]: entry
+            for entry in self._voice_entry(metadata.id)["artifacts"].values()
+        }
         for path in (bundle.model_path, bundle.config_path, bundle.model_card):
             if path.is_symlink() or path.name not in expected:
                 raise AssetCacheError(f"Cached Piper voice contains an unsafe artifact: {path}")
@@ -282,7 +304,9 @@ class VoiceAssetManager:
                 self._emit("cache-hit", voice_id=metadata.id, message="Using cached Piper voice")
                 return bundle
         if not download or self.offline:
-            raise OfflineAssetError(f"Piper voice is not cached and offline mode is enabled: {metadata.id}")
+            raise OfflineAssetError(
+                f"Piper voice is not cached and offline mode is enabled: {metadata.id}"
+            )
         self.voices_dir.mkdir(parents=True, exist_ok=True)
         with asset_lock(self.cache_dir / "locks" / f"voice-{metadata.id}.lock"):
             if not force_download:
@@ -293,12 +317,16 @@ class VoiceAssetManager:
             self._emit("download-start", voice_id=metadata.id, message="Downloading Piper voice")
             try:
                 _, download_error, download_voice, _, _, _, _ = self._catalog_dependency()
-                download_voice(dict(self._voice_entry(metadata.id)), target, overwrite=force_download)
+                download_voice(
+                    dict(self._voice_entry(metadata.id)), target, overwrite=force_download
+                )
             except OptionalDependencyError:
                 raise
             except Exception as exc:
                 if download_error is not None and isinstance(exc, download_error):
-                    raise AssetDownloadError(f"Unable to download Piper voice: {metadata.id}") from exc
+                    raise AssetDownloadError(
+                        f"Unable to download Piper voice: {metadata.id}"
+                    ) from exc
                 raise AssetDownloadError(f"Unable to download Piper voice: {metadata.id}") from exc
             bundle = self._validated_bundle(metadata)
             self._emit("download-complete", voice_id=metadata.id, message="Downloaded Piper voice")
@@ -353,7 +381,9 @@ class VoiceAssetManager:
         return CacheInfo(
             directory=self.cache_dir,
             catalog_path=self.catalog_path,
-            cached_voices=tuple(bundle.voice_id for bundle in self.cached_voices() if bundle.voice_id is not None),
+            cached_voices=tuple(
+                bundle.voice_id for bundle in self.cached_voices() if bundle.voice_id is not None
+            ),
             catalog_cached=self.catalog_path.exists(),
         )
 
@@ -365,7 +395,7 @@ def list_voices(
     cache_dir: str | Path | None = None,
     offline: bool | None = None,
     refresh: bool = False,
- ) -> tuple[VoiceMetadata, ...]:
+) -> tuple[VoiceMetadata, ...]:
     """List catalog voices using the standard asset manager."""
 
     return VoiceAssetManager(cache_dir, offline=offline).list_voices(
@@ -377,8 +407,7 @@ def list_cached_voices(
     *,
     cache_dir: str | Path | None = None,
     offline: bool | None = None,
- ) -> tuple[VoiceBundle, ...]:
+) -> tuple[VoiceBundle, ...]:
     """List valid voice bundles currently present in the cache."""
 
     return VoiceAssetManager(cache_dir, offline=offline).cached_voices()
-
