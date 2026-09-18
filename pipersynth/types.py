@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from ._warnings import warn_external
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, Literal
@@ -9,6 +8,7 @@ import numpy as np
 from audiocompose import write_wav as compose_write_wav
 from utterplan import UtterancePlan
 
+from ._warnings import warn_external
 from .audio import audio_to_int16_bytes, float_to_int16, write_wav
 from .diagnostics import RuntimeDiagnostics, TimingDiagnostics
 from .errors import InvalidSynthesisConfigError, ModelInferenceError, OptionalDependencyError

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from ._warnings import warn_external
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +8,7 @@ from typing import Any, Literal
 import numpy as np
 from utterplan import LinguisticsConfig, PauseConfig, SSMDConfig
 
+from ._warnings import warn_external
 from .errors import InvalidSynthesisConfigError
 from .session import ProviderConfig, ProviderSpec
 

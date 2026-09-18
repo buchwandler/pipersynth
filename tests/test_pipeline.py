@@ -1,10 +1,12 @@
+from dataclasses import FrozenInstanceError
+
 import numpy as np
 import pytest
-from dataclasses import FrozenInstanceError
 from piperg2p import PhonemeSentence, PhonemizeResult, VoiceConfig
+
 from pipersynth.config import GenerationConfig, PipelineConfig
-from pipersynth.errors import InvalidSynthesisConfigError
 from pipersynth.diagnostics import RuntimeDiagnostics
+from pipersynth.errors import InvalidSynthesisConfigError
 from pipersynth.pipeline import PiperPipeline
 
 

@@ -1,6 +1,6 @@
 # PiperSynth
 
-PiperSynth is an independent Apache-2.0 application-facing Piper engine. It uses `piperg2p` for voice configuration and phonemization, `OnnxVoice` for model assets and ONNX execution, and `AudioCompose` for generic audio composition and AudioJob persistence. It does not depend on the upstream Piper runtime or `piper-tts`.
+PiperSynth is an application-facing Python synthesis library for Piper-compatible ONNX voices. It uses `piperg2p` for voice configuration and phonemization, `OnnxVoice` for model assets and ONNX execution, and `AudioCompose` for generic audio composition and AudioJob persistence. It does not depend on the upstream Piper runtime or `piper-tts`.
 
 ## Quick start
 
@@ -116,22 +116,35 @@ Set `ONNXVOICE_CACHE_DIR` or pass `cache_dir=` explicitly to control the OnnxVoi
 
 OnnxVoice owns installed artifacts, manifests, checksums, and locks. PiperSynth's `VoiceAssetManager` and `VoiceBundle` are compatibility views over that store. Voice licenses apply to the downloaded model and are not part of the PiperSynth Apache-2.0 license.
 
-The CLI provides catalog and cache operations:
+The Python API provides catalog and cache operations:
 
-```bash
-pipersynth voices list --language en --quality medium
-pipersynth voices show en_US-lessac-medium
-pipersynth voices download en_US-lessac-medium
-pipersynth voices license en_US-lessac-medium
-pipersynth voices path en_US-lessac-medium
-pipersynth speak --voice en_US-lessac-medium "Hello from PiperSynth." -o hello.wav
-pipersynth cache info
-```
+```python
+from pipersynth import VoiceAssetManager
 
-The original local-model command remains supported:
+manager = VoiceAssetManager()
 
-```bash
-pipersynth voice.onnx "Hello world." -o hello.wav
+# List voices
+for voice in manager.list_voices(language="en", quality="medium"):
+    print(voice.id, voice.name)
+
+# Get voice metadata
+metadata = manager.get_voice_metadata("en_US-lessac-medium")
+print(metadata.id, metadata.name, metadata.language_code, metadata.quality)
+
+# Download/resolve a voice
+bundle = manager.resolve_voice("en_US-lessac-medium")
+print(bundle.directory)
+print(bundle.model_card_text)
+
+# Cache operations
+print(manager.cache_info())
+for cached in manager.cached_voices():
+    print(cached.directory)
+
+# Destructive operations (use with caution)
+# manager.remove_voice("en_US-lessac-medium")
+# manager.prune()
+# manager.clear(voices=True)
 ```
 
 ## Optional features

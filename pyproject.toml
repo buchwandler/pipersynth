@@ -44,8 +44,6 @@ dev = [
   "mypy>=1.11",
   "build>=1",
 ]
-[project.scripts]
-pipersynth = "pipersynth.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
