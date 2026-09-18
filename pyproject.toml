@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68", "wheel", "setuptools_scm[toml]>=6.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pipersynth"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Independent Python synthesis runtime for Piper-compatible ONNX TTS models"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -63,6 +63,13 @@ addopts = "-q --strict-markers"
 
 [tool.setuptools.package-data]
 pipersynth = ["py.typed"]
+
+[tool.setuptools_scm]
+write_to = "pipersynth/_version.py"
+fallback_version = "0.1.1"
+
+[tool.coverage.run]
+omit = ["pipersynth/_version.py"]
 
 [tool.ruff]
 target-version = "py310"

@@ -17,7 +17,7 @@ from audiocompose import (
 )
 from utterplan import UtterancePlan
 
-from ._version import __version__
+from . import __version__
 from .audio import postprocess_audio
 from .plan_adapter import PreparedPiperSegment, PreparedPiperUnit
 

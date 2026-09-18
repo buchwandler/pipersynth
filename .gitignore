@@ -218,6 +218,9 @@ __marimo__/
 .streamlit/secrets.toml
 context_pipersynth*.*
 
+# setuptools_scm generated version file
+pipersynth/_version.py
+
 # Generated outputs from examples.
 example-artefacts/*
 !example-artefacts/.gitkeep
