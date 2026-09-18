@@ -51,6 +51,7 @@ with PiperPipeline.from_pretrained("en_US-lessac-medium") as pipe:
     normal = pipe.render_plan(plan, length_scale=1.0)
     fast = pipe.render_plan(plan, length_scale=0.9)
 ```
+
 ## AudioJob production and replay
 
 An existing plan can be converted to a generic, persisted AudioJob without composing it in PiperSynth:

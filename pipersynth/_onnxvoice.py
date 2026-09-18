@@ -110,7 +110,9 @@ def adapt_progress(
             "artifact_cached": "cache-hit",
         }
         raw_ref = getattr(event, "ref", None)
-        voice_id = raw_ref.split(":", 1)[1] if isinstance(raw_ref, str) and ":" in raw_ref else raw_ref
+        voice_id = (
+            raw_ref.split(":", 1)[1] if isinstance(raw_ref, str) and ":" in raw_ref else raw_ref
+        )
         callback(
             AssetProgressEvent(
                 cast(AssetProgressPhase, phase_map.get(phase, "voice-resolve")),
@@ -228,7 +230,9 @@ def installation_to_voice_info(installation: Any, *, ref: str | None = None) -> 
         model = installation.artifact("model").path
         config = installation.artifact("config").path
     except (KeyError, AttributeError) as exc:
-        raise UnsupportedModelError("Piper installation must contain model and config artifacts") from exc
+        raise UnsupportedModelError(
+            "Piper installation must contain model and config artifacts"
+        ) from exc
     try:
         model_card = installation.artifact("model_card").path
     except KeyError:

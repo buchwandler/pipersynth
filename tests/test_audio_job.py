@@ -92,6 +92,7 @@ def test_to_audio_job_maps_positive_pauses_once():
     assert all(item.seconds > 0 for item in job.items if type(item).__name__ == "Silence")
     pipeline.close()
 
+
 def test_render_plan_composes_once_and_uses_composition_result(monkeypatch):
     from audiocompose import Composer as RealComposer
 
@@ -138,8 +139,6 @@ def test_composition_keeps_unresolved_markers_explicit():
     assert result.markers[0]["timing"] == "unresolved"
     assert result.markers[0]["sample_offset"] is None
     pipeline.close()
-
-
 
 
 def test_audio_job_save_load_replays_fake_audio(tmp_path: Path):

@@ -91,13 +91,9 @@ def render_segment(
                 volume=prepared.synthesis.volume,
             )
             if inference.timing_summary is not None:
-                inference_metadata["pipersynth.onnx_timings"] = _json_safe(
-                    inference.timing_summary
-                )
+                inference_metadata["pipersynth.onnx_timings"] = _json_safe(inference.timing_summary)
             if inference.output_summary:
-                inference_metadata["pipersynth.onnx_outputs"] = _json_safe(
-                    inference.output_summary
-                )
+                inference_metadata["pipersynth.onnx_outputs"] = _json_safe(inference.output_summary)
         else:
             audio = voice.synthesize_ids(prepared.phoneme_ids, prepared.synthesis)
     else:
@@ -182,7 +178,10 @@ def build_audio_job_context(
                     Silence(
                         pause_id,
                         rendered.pause_before_seconds,
-                        {"pipersynth.segment_id": rendered.segment_id, "pipersynth.position": "before"},
+                        {
+                            "pipersynth.segment_id": rendered.segment_id,
+                            "pipersynth.position": "before",
+                        },
                     )
                 )
                 item_ids.append(pause_id)
@@ -220,7 +219,10 @@ def build_audio_job_context(
                     Silence(
                         pause_id,
                         rendered.pause_after_seconds,
-                        {"pipersynth.segment_id": rendered.segment_id, "pipersynth.position": "after"},
+                        {
+                            "pipersynth.segment_id": rendered.segment_id,
+                            "pipersynth.position": "after",
+                        },
                     )
                 )
                 item_ids.append(pause_id)

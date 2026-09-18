@@ -439,12 +439,9 @@ class PiperPipeline:
         finally:
             prepared.close()
 
-    def to_audio_job(
-        self, plan: UtterancePlan, **render_overrides: Any
-    ) -> AudioJob:
+    def to_audio_job(self, plan: UtterancePlan, **render_overrides: Any) -> AudioJob:
         """Build a generic AudioCompose job without composing it."""
         return self._build_audio_job_context(plan, **render_overrides).job
-
 
     def render_plan(self, plan: UtterancePlan, **render_overrides: Any) -> AudioResult:
         self._ensure_open()

@@ -57,9 +57,7 @@ def _chunks_from_composition(
     chunks: list[AudioChunk] = []
     for record in context.units:
         spans = [
-            composed_items[item_id]
-            for item_id in record.item_ids
-            if item_id in composed_items
+            composed_items[item_id] for item_id in record.item_ids if item_id in composed_items
         ]
         if spans:
             start = spans[0].start_sample
@@ -96,9 +94,7 @@ def audio_result_from_composition(
         "voice_id": context.voice_id,
         "composition_provenance": dict(composition.provenance),
     }
-    chunks = (
-        _chunks_from_composition(plan, composition, context) if retain_unit_audio else []
-    )
+    chunks = _chunks_from_composition(plan, composition, context) if retain_unit_audio else []
     return AudioResult(
         audio=composition.audio,
         sample_rate=composition.sample_rate,

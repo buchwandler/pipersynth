@@ -183,7 +183,9 @@ class OnnxSessionManager:
                 self._session = self.session_factory(
                     str(self.model_path),
                     providers=list(self.providers_requested),
-                    provider_options=[dict(provider.options or {}) for provider in self.provider_configs],
+                    provider_options=[
+                        dict(provider.options or {}) for provider in self.provider_configs
+                    ],
                     sess_options=self.session_options,
                 )
             else:

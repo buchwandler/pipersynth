@@ -76,6 +76,7 @@ class PiperVoice:
     ) -> None:
         if not hasattr(runtime, "infer") and hasattr(runtime, "run"):
             from .session import compatibility_runtime
+
             runtime = compatibility_runtime(
                 runtime,
                 model_path=model_path or "<injected>",
@@ -237,12 +238,10 @@ class PiperVoice:
         frontend_name = getattr(frontend_diagnostics, "backend", None)
         speaker_names = tuple(getattr(self.config, "speaker_id_map", {}).keys())
         return RuntimeDiagnostics(
-            model_path=runtime_fields.get("model_path") or (
-                str(self.model_path) if self.model_path is not None else None
-            ),
-            config_path=runtime_fields.get("config_path") or (
-                str(self.config_path) if self.config_path is not None else None
-            ),
+            model_path=runtime_fields.get("model_path")
+            or (str(self.model_path) if self.model_path is not None else None),
+            config_path=runtime_fields.get("config_path")
+            or (str(self.config_path) if self.config_path is not None else None),
             sample_rate=self.config.sample_rate,
             num_symbols=self.config.num_symbols,
             num_speakers=self.config.num_speakers,

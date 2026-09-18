@@ -33,6 +33,7 @@ def _offline_value(value: bool | None) -> bool:
         return value
     return os.environ.get("PIPERSYNTH_OFFLINE", "").casefold() in {"1", "true", "yes", "on"}
 
+
 def _translate_asset_error(exc: Exception) -> AssetError:
     if isinstance(exc, AssetError):
         return exc
@@ -162,7 +163,9 @@ class VoiceAssetManager:
         return self._manager().where(normalize_piper_ref(voice))
 
     def cached_voices(self) -> tuple[VoiceBundle, ...]:
-        return tuple(VoiceBundle.from_installation(item) for item in self._manager().installed("piper"))
+        return tuple(
+            VoiceBundle.from_installation(item) for item in self._manager().installed("piper")
+        )
 
     def remove_voice(self, voice: str) -> None:
         self._manager().remove(normalize_piper_ref(voice))
@@ -185,11 +188,15 @@ class VoiceAssetManager:
 
     def cache_info(self) -> CacheInfo:
         directory = self.cache_dir or Path.home() / ".cache" / "onnxvoice"
-        catalog_path = self.catalog_path if str(self.catalog_path) else directory / "catalogs" / "piper.json"
+        catalog_path = (
+            self.catalog_path if str(self.catalog_path) else directory / "catalogs" / "piper.json"
+        )
         return CacheInfo(
             directory=directory,
             catalog_path=catalog_path,
-            cached_voices=tuple(bundle.voice_id for bundle in self.cached_voices() if bundle.voice_id),
+            cached_voices=tuple(
+                bundle.voice_id for bundle in self.cached_voices() if bundle.voice_id
+            ),
             catalog_cached=catalog_path.exists(),
         )
 
