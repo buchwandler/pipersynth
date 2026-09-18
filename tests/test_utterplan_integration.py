@@ -11,15 +11,19 @@ from pipersynth.planning import planner_config_from_pipersynth
 
 
 def test_planner_config_mapping_and_legacy_pause() -> None:
-    config = PipelineConfig(
-        "voice.onnx",
-        language="EN_US",
-        generation=GenerationConfig(sentence_silence=0.2),
-        pauses=PauseConfig(sentence=0.4),
-        document_format="ssmd",
-        text_preparation="spokenform",
-        unit="sentence",
-    )
+    with pytest.warns(
+        DeprecationWarning,
+        match="sentence_silence is deprecated",
+    ):
+        config = PipelineConfig(
+            "voice.onnx",
+            language="EN_US",
+            generation=GenerationConfig(sentence_silence=0.2),
+            pauses=PauseConfig(sentence=0.4),
+            document_format="ssmd",
+            text_preparation="spokenform",
+            unit="sentence",
+        )
     planner = planner_config_from_pipersynth(config)
     assert planner.language == "en-us"
     assert planner.document_format == "ssmd"

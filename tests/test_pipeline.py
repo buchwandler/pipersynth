@@ -1,7 +1,9 @@
 import numpy as np
+import pytest
+from dataclasses import FrozenInstanceError
 from piperg2p import PhonemeSentence, PhonemizeResult, VoiceConfig
-
 from pipersynth.config import GenerationConfig, PipelineConfig
+from pipersynth.errors import InvalidSynthesisConfigError
 from pipersynth.diagnostics import RuntimeDiagnostics
 from pipersynth.pipeline import PiperPipeline
 
@@ -90,11 +92,19 @@ def test_pipeline_warmup_and_close_are_idempotent():
 
 
 def test_generation_config_is_immutable_and_validates_silence():
-    config = GenerationConfig(sentence_silence=0.1)
+    with pytest.warns(
+        DeprecationWarning,
+        match="sentence_silence is deprecated",
+    ):
+        config = GenerationConfig(sentence_silence=0.1)
+
     assert config.sentence_silence == 0.1
-    try:
+
+    with pytest.raises(FrozenInstanceError):
         config.sentence_silence = 0.2
-    except Exception:
-        pass
-    else:
-        raise AssertionError("GenerationConfig must be immutable")
+
+    with pytest.raises(
+        InvalidSynthesisConfigError,
+        match="sentence_silence",
+    ):
+        GenerationConfig(sentence_silence=-0.1)

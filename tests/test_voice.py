@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from piperg2p import PiperFrontend, VoiceConfig
+from piperg2p import MissingPhonemeWarning, PiperFrontend, VoiceConfig
 
 from pipersynth import PiperVoice, SynthesisConfig
 
@@ -117,9 +117,21 @@ def test_frontend_warnings_are_propagated():
     cfg = config()
     frontend = PiperFrontend(cfg)
     voice = PiperVoice(FakeSession(), cfg, frontend)
-    chunks = list(voice.synthesize("hello"))
-    assert chunks
-    assert isinstance(chunks[0].warnings, tuple)
+
+    with pytest.warns(MissingPhonemeWarning) as caught:
+        chunks = list(voice.synthesize("hello"))
+
+    expected = (
+        "phoneme 'h' is not present in voice phoneme_id_map",
+        "phoneme 'e' is not present in voice phoneme_id_map",
+        "phoneme 'l' is not present in voice phoneme_id_map",
+        "phoneme 'l' is not present in voice phoneme_id_map",
+        "phoneme 'o' is not present in voice phoneme_id_map",
+    )
+
+    assert len(chunks) == 1
+    assert tuple(str(item.message) for item in caught) == expected
+    assert chunks[0].warnings == expected
 
 
 def test_close_is_idempotent_and_use_after_close_is_rejected():

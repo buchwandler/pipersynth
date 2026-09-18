@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import warnings
+from ._warnings import warn_external
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, Literal
@@ -48,10 +48,9 @@ class SynthesisConfig:
             if self.noise_w_scale is not None:
                 raise InvalidSynthesisConfigError("noise_w and noise_w_scale cannot both be set")
             _finite(self.noise_w, "noise_w", minimum=0.0)
-            warnings.warn(
+            warn_external(
                 "noise_w is deprecated; use noise_w_scale instead",
                 DeprecationWarning,
-                stacklevel=2,
             )
         if not isinstance(self.normalize_audio, bool):
             raise InvalidSynthesisConfigError("normalize_audio must be a bool")

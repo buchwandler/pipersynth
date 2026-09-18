@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import warnings
+from ._warnings import warn_external
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,11 +42,11 @@ class GenerationConfig:
             raise InvalidSynthesisConfigError("speaker must be an integer, name, or None")
         if not isinstance(self.is_phonemes, bool):
             raise InvalidSynthesisConfigError("is_phonemes must be a bool")
+        _validate_number(self.sentence_silence, "sentence_silence", 0.0)
         if self.sentence_silence:
-            warnings.warn(
+            warn_external(
                 "sentence_silence is deprecated; configure semantic pauses through UtterPlan",
                 DeprecationWarning,
-                stacklevel=2,
             )
         _validate_number(self.length_scale, "length_scale", np.finfo(float).tiny)
         _validate_number(self.noise_scale, "noise_scale", 0.0)
@@ -54,7 +54,6 @@ class GenerationConfig:
         if not isinstance(self.normalize_audio, bool):
             raise InvalidSynthesisConfigError("normalize_audio must be a bool")
         _validate_number(self.volume, "volume", 0.0)
-        _validate_number(self.sentence_silence, "sentence_silence", 0.0)
 
 
 @dataclass(frozen=True, slots=True)
