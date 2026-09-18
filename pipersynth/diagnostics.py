@@ -43,6 +43,7 @@ class TimingDiagnostics:
     inference_ms: float | None = None
     prepare_text_ms: float | None = None
     phonemize_ms: float | None = None
+    composition_ms: float | None = None
     postprocess_ms: float | None = None
     total_ms: float | None = None
 

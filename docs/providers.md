@@ -1,9 +1,16 @@
 # ONNX providers
 
-ONNX Runtime is optional and imported only when a session is created or providers are queried.
+OnnxVoice owns ONNX Runtime loading and provider selection. PiperSynth imports no ONNX Runtime module directly. Runtime dependencies are loaded only when an OnnxVoice runtime is opened or providers are queried.
 
-The default provider is exactly `CPUExecutionProvider`. Passing `providers` preserves the requested order. Provider options can be supplied through `PipelineConfig.provider_options` or `PiperVoice.load(provider_options=...)`. A requested unavailable provider raises an actionable error instead of silently selecting another provider.
+The default provider remains exactly `CPUExecutionProvider`. Passing `providers` preserves the requested order. `ProviderConfig` remains a PiperSynth compatibility type and is translated to OnnxVoice provider and provider-options arguments. A requested unavailable provider raises an actionable error instead of silently selecting another provider.
 
-Use `available_providers()` to inspect the installed runtime. For tests, inject a `session_factory`; this does not require ONNX Runtime.
+Use `available_providers()` to inspect the installed runtime. For deterministic tests, inject a runtime with an `infer()` method or use `PiperVoice.load(..., session_factory=...)` as a compatibility seam. Neither approach requires a real model runtime.
 
-CPU and GPU extras are mutually exclusive installation choices. PiperSynth does not include `piper-tts`.
+Install one runtime extra:
+
+```bash
+pip install "pipersynth[cpu]"
+pip install "pipersynth[gpu]"
+```
+
+The catalog and managed voice store are provided by OnnxVoice. PiperSynth does not include `piper-tts` or the former Piper-specific catalog package.

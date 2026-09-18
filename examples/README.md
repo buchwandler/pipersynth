@@ -6,6 +6,7 @@ The maintained examples use catalog voices and the UtterPlan workflow:
 2. Build an explicit plan with `pipeline.plan(...)`.
 3. Save the `*.utterplan.json` artifact.
 4. Render that existing plan and save a WAV file.
+5. Optionally convert the plan to an `AudioJob` and replay it through AudioCompose.
 
 No example requires a manually downloaded `.onnx` file. Voice bundles are resolved
 and cached by PiperSynth. Generated plans and WAV files are written below

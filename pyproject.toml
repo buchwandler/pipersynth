@@ -14,7 +14,8 @@ dependencies = [
   "numpy>=1.23",
   "utterplan>=0.1,<0.2",
   "piperg2p",
-  "platformdirs>=4,<5",
+  "onnxvoice>=0.1,<0.2",
+  "audiocompose>=0.1,<0.2",
 ]
 keywords = ["tts", "text-to-speech", "piper", "onnx", "speech", "onnxruntime"]
 classifiers = [
@@ -32,9 +33,9 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-cpu = ["onnxruntime>=1.17,<2", "piper-onnx-voices>=0.1,<0.2"]
-gpu = ["onnxruntime-gpu>=1.17,<2", "piper-onnx-voices>=0.1,<0.2"]
-catalog = ["piper-onnx-voices>=0.1,<0.2"]
+cpu = ["onnxvoice[cpu]>=0.1,<0.2"]
+gpu = ["onnxvoice[gpu]>=0.1,<0.2"]
+catalog = ["onnxvoice>=0.1,<0.2"]
 playback = ["sounddevice>=0.5,<0.6"]
 dev = [
   "pytest>=8",
@@ -52,6 +53,7 @@ include = ["pipersynth*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 markers = [
   "integration: tests requiring optional runtimes or external voice assets",
   "network: tests requiring network access",

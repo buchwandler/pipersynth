@@ -1,6 +1,6 @@
 # PiperSynth
 
-PiperSynth is an independent Apache-2.0 Python runtime for Piper-compatible ONNX voice models. It uses `piperg2p` for voice configuration, text-to-phoneme conversion, and phoneme IDs, and owns ONNX inference, audio conversion, WAV writing, lifecycle, and streaming. It does not depend on the upstream Piper runtime or `piper-tts`.
+PiperSynth is an independent Apache-2.0 application-facing Piper engine. It uses `piperg2p` for voice configuration and phonemization, `OnnxVoice` for model assets and ONNX execution, and `AudioCompose` for generic audio composition and AudioJob persistence. It does not depend on the upstream Piper runtime or `piper-tts`.
 
 ## Quick start
 
@@ -22,8 +22,7 @@ synthesize_to_wav(
 )
 ```
 
-On first use PiperSynth fetches the voice catalog and downloads the selected model, matching config, and `MODEL_CARD` into its local cache. Later calls reuse the cached assets. The convenience call creates a fresh pipeline and closes it before returning.
-
+On first use OnnxVoice fetches the Piper catalog and installs the selected model, matching config, and any model card into its shared local store. Later calls reuse that installation. The convenience call creates a fresh pipeline and closes it before returning.
 For repeated synthesis, reuse one pipeline and one ONNX session:
 
 ```python
@@ -52,6 +51,25 @@ with PiperPipeline.from_pretrained("en_US-lessac-medium") as pipe:
     normal = pipe.render_plan(plan, length_scale=1.0)
     fast = pipe.render_plan(plan, length_scale=0.9)
 ```
+## AudioJob production and replay
+
+An existing plan can be converted to a generic, persisted AudioJob without composing it in PiperSynth:
+
+```python
+job = pipe.to_audio_job(plan)
+manifest = job.save("speech.audiojob")
+```
+
+`AudioClip` IDs preserve UtterPlan segment IDs. Resolved semantic pauses are explicit `Silence` items, and the job includes an explicit compatibility output policy. Replay is producer-neutral:
+
+```python
+from audiocompose import AudioJob, Composer
+
+job = AudioJob.load("speech.audiojob/audiojob.json")
+composition = Composer().compose(job)
+```
+
+The normal `render_plan()` API builds and composes this job exactly once, then adapts the composed waveform back to `AudioResult`. Streaming APIs remain a separate batch-independent path.
 
 ## Runnable examples
 
@@ -93,9 +111,9 @@ bundle = manager.resolve_voice("en_US-lessac-medium")
 print(bundle.model_card_text)
 ```
 
-Set `PIPERSYNTH_CACHE_DIR` to override the platform cache location, or pass `cache_dir=` explicitly. Set `PIPERSYNTH_OFFLINE=1` for process-wide offline operation. Explicit `offline=` arguments take precedence.
+Set `ONNXVOICE_CACHE_DIR` or pass `cache_dir=` explicitly to control the OnnxVoice store. `PIPERSYNTH_CACHE_DIR` remains accepted as a PiperSynth compatibility alias. Set `PIPERSYNTH_OFFLINE=1` for process-wide offline operation. Explicit `offline=` arguments take precedence.
 
-Each downloaded bundle contains the upstream `MODEL_CARD`. Voice licenses apply to the downloaded model and are not part of the PiperSynth Apache-2.0 license.
+OnnxVoice owns installed artifacts, manifests, checksums, and locks. PiperSynth's `VoiceAssetManager` and `VoiceBundle` are compatibility views over that store. Voice licenses apply to the downloaded model and are not part of the PiperSynth Apache-2.0 license.
 
 The CLI provides catalog and cache operations:
 
@@ -117,7 +135,7 @@ pipersynth voice.onnx "Hello world." -o hello.wav
 
 ## Optional features
 
-The UtterPlan dependency provides Spokenform and SSMD planning. Install `pipersynth[playback]` for `AudioResult.play()` and streaming playback, or `pipersynth[gpu]` for GPU ONNX Runtime. Catalog support is included in the CPU and GPU extras and is also available as `pipersynth[catalog]`.
+The UtterPlan dependency provides Spokenform and SSMD planning. Install `pipersynth[playback]` for `AudioResult.play()` and streaming playback, or `pipersynth[gpu]` for the OnnxVoice GPU provider. Catalog support is provided by OnnxVoice and is also available as `pipersynth[catalog]`.
 
 The core API supports sentence and paragraph units through UtterPlan, resolved semantic pauses, plan save/load, and PCM iteration through `iter_pcm()`. It does not claim generic voice blending, approximate word timings, hidden language detection, model conversion, training, quantization, or HTTP serving.
 

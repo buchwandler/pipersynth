@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
+from audiocompose import AudioJob, Composer
 from utterplan import (
     LinguisticsConfig,
     PauseConfig,
@@ -17,13 +18,15 @@ from utterplan import (
 )
 
 from .audio import silence_samples
+from .audio_job import PiperAudioJobContext, build_audio_job_context, render_segment
+from .composition import audio_result_from_composition
 from .config import GenerationConfig, PipelineConfig
 from .diagnostics import TimingDiagnostics
 from .errors import ConfigFileNotFoundError, OptionalDependencyError, VoiceClosedError
 from .plan_adapter import PreparedPiperUnit
 from .plan_adapter import prepare_plan as adapt_plan
 from .planning import inspect_voice_config, planner_config_from_pipersynth
-from .types import AudioChunk, AudioResult, AudioUnitDescriptor, AudioUnitResult, SynthesisConfig
+from .types import AudioResult, AudioUnitDescriptor, AudioUnitResult, SynthesisConfig
 from .voice import PiperVoice
 
 
@@ -101,23 +104,31 @@ class PreparedAudioUnits:
         phonemes: list[str] = []
         phoneme_ids: list[int] = []
         warnings: list[str] = []
-        self._segment_audio_sizes: dict[str, int] = {}
-        for segment in unit.segments:
-            before = silence_samples(voice.config.sample_rate, segment.pause_before_seconds)
+        segment_by_id = {segment.id: segment for segment in self.plan.segments}
+        self._segment_audio_sizes = {}
+        rendered_metadata: list[Mapping[str, Any]] = []
+        for prepared in unit.segments:
+            plan_segment = segment_by_id[prepared.plan_segment_id]
+            rendered = render_segment(
+                prepared,
+                unit_id=unit.plan_unit_id,
+                spoken_start=plan_segment.spoken_start,
+                spoken_end=plan_segment.spoken_end,
+                voice=voice,
+            )
+            before = silence_samples(voice.config.sample_rate, rendered.pause_before_seconds)
             if before:
                 parts.append(np.zeros(before, dtype=np.float32))
-            if segment.phoneme_ids:
-                audio = voice.synthesize_ids(segment.phoneme_ids, segment.synthesis)
-                self._segment_audio_sizes[segment.plan_segment_id] = audio.size
-                parts.append(audio)
-            else:
-                self._segment_audio_sizes[segment.plan_segment_id] = 0
-            after = silence_samples(voice.config.sample_rate, segment.pause_after_seconds)
+            self._segment_audio_sizes[rendered.segment_id] = rendered.audio.size
+            if rendered.audio.size:
+                parts.append(rendered.audio)
+            after = silence_samples(voice.config.sample_rate, rendered.pause_after_seconds)
             if after:
                 parts.append(np.zeros(after, dtype=np.float32))
-            phonemes.extend(segment.phonemes)
-            phoneme_ids.extend(segment.phoneme_ids)
-            warnings.extend(segment.warnings)
+            phonemes.extend(rendered.phonemes)
+            phoneme_ids.extend(rendered.phoneme_ids)
+            warnings.extend(rendered.warnings)
+            rendered_metadata.append(rendered.metadata)
         audio = (
             np.concatenate(parts).astype(np.float32, copy=False)
             if parts
@@ -125,10 +136,9 @@ class PreparedAudioUnits:
         )
         metadata = {
             "plan_id": self.plan.plan_id,
-            "frontend_diagnostics": [segment.metadata for segment in unit.segments],
+            "frontend_diagnostics": rendered_metadata,
         }
-        markers = self._marker_metadata(unit, audio)
-        metadata["markers"] = markers
+        metadata["markers"] = self._marker_metadata(unit, audio)
         return AudioUnitResult(
             descriptor=self._descriptor_by_index[unit.index],
             audio=audio,
@@ -413,41 +423,41 @@ class PiperPipeline:
         self._prepared.append(result)
         return result
 
+    def _build_audio_job_context(
+        self, plan: UtterancePlan, **render_overrides: Any
+    ) -> PiperAudioJobContext:
+        self._ensure_open()
+        plan.validate()
+        prepared = self.prepare_plan(plan, **dict(render_overrides))
+        try:
+            return build_audio_job_context(
+                plan=plan,
+                prepared_units=prepared._prepared_units,
+                voice=self.voice,
+                voice_id=getattr(self._voice_bundle, "voice_id", None),
+            )
+        finally:
+            prepared.close()
+
+    def to_audio_job(
+        self, plan: UtterancePlan, **render_overrides: Any
+    ) -> AudioJob:
+        """Build a generic AudioCompose job without composing it."""
+        return self._build_audio_job_context(plan, **render_overrides).job
+
+
     def render_plan(self, plan: UtterancePlan, **render_overrides: Any) -> AudioResult:
         self._ensure_open()
         plan.validate()
         started = time.perf_counter()
-        prepared = self.prepare_plan(plan, **render_overrides)
-        try:
-            units = list(prepared.render())
-        finally:
-            prepared.close()
-        inference_ms = (time.perf_counter() - started) * 1000
-        parts = [unit.audio for unit in units]
-        audio = (
-            np.concatenate(parts).astype(np.float32, copy=False)
-            if parts
-            else np.zeros(0, dtype=np.float32)
-        )
-        markers = [marker for unit in units for marker in unit.metadata.get("markers", [])]
-        warnings = tuple(warning for unit in units for warning in unit.warnings)
-        metadata = {
-            "plan_id": plan.plan_id,
-            "utterplan_producer": dict(plan.producer),
-            "utterplan_schema_version": plan.schema_version,
-            "voice_id": getattr(self._voice_bundle, "voice_id", None),
-            "voice_source_revision": getattr(
-                getattr(self._voice_bundle, "metadata", None), "source_revision", None
-            ),
-            "frontend": getattr(getattr(self.voice.frontend, "diagnostics", None), "backend", None),
-            "provider": self.voice.diagnostics.providers_active,
-        }
-        timing = TimingDiagnostics(
-            planning_ms=self._last_timing.get("planning_ms"),
-            g2p_ms=self._last_timing.get("g2p_ms"),
-            inference_ms=inference_ms,
-            postprocess_ms=0.0,
-            total_ms=(time.perf_counter() - started) * 1000,
+        context = self._build_audio_job_context(plan, **render_overrides)
+        composition_started = time.perf_counter()
+        composition = Composer().compose(context.job)
+        composition_ms = (time.perf_counter() - composition_started) * 1000
+        total_ms = (time.perf_counter() - started) * 1000
+        voice_id = context.voice_id
+        voice_source_revision = getattr(
+            getattr(self._voice_bundle, "metadata", None), "source_revision", None
         )
         diagnostics = None
         if self.config.return_diagnostics:
@@ -456,35 +466,35 @@ class PiperPipeline:
                 plan_id=plan.plan_id,
                 utterplan_producer=dict(plan.producer),
                 utterplan_schema_version=plan.schema_version,
-                voice_id=metadata["voice_id"],
-                voice_source_revision=metadata["voice_source_revision"],
+                voice_id=voice_id,
+                voice_source_revision=voice_source_revision,
             )
-        return AudioResult(
-            audio=audio,
-            sample_rate=self.voice.config.sample_rate,
-            source_text=plan.source.text,
-            prepared_text=plan.texts.spoken,
+        timing = TimingDiagnostics(
+            planning_ms=self._last_timing.get("planning_ms"),
+            g2p_ms=self._last_timing.get("g2p_ms"),
+            inference_ms=(composition_started - started) * 1000,
+            composition_ms=composition_ms,
+            postprocess_ms=0.0,
+            total_ms=total_ms,
+        )
+        result = audio_result_from_composition(
             plan=plan,
-            plan_id=plan.plan_id,
-            chunks=[
-                AudioChunk(
-                    sample_rate=unit.sample_rate,
-                    audio_float_array=unit.audio,
-                    phonemes=unit.phonemes,
-                    phoneme_ids=unit.phoneme_ids,
-                    warnings=unit.warnings,
-                    metadata=unit.metadata,
-                )
-                for unit in units
-            ]
-            if self.config.retain_unit_audio
-            else [],
-            markers=markers,
-            warnings=tuple(plan.warnings) + warnings,
+            context=context,
+            composition=composition,
             diagnostics=diagnostics,
             timing=timing if self.config.return_diagnostics else None,
-            metadata=metadata,
+            retain_unit_audio=self.config.retain_unit_audio,
         )
+        result.metadata.update(
+            {
+                "voice_source_revision": voice_source_revision,
+                "frontend": getattr(
+                    getattr(self.voice.frontend, "diagnostics", None), "backend", None
+                ),
+                "provider": self.voice.diagnostics.providers_active,
+            }
+        )
+        return result
 
     def prepare_units(
         self,

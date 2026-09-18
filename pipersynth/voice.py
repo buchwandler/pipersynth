@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import wave
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
 
 import numpy as np
 from piperg2p import PiperFrontend, VoiceConfig
 
+from ._onnxvoice import (
+    ResolvedPiperVoice,
+    install_pretrained_voice,
+    open_installed_voice,
+    open_local_voice,
+    runtime_diagnostics,
+    summarize_inference,
+)
+from .asset_progress import AssetProgressEvent
 from .audio import postprocess_audio, silence_samples
 from .diagnostics import RuntimeDiagnostics
 from .errors import (
@@ -17,7 +27,7 @@ from .errors import (
     ModelInferenceError,
     VoiceClosedError,
 )
-from .session import OnnxSessionManager, ProviderConfig, ProviderSpec
+from .session import ProviderConfig, ProviderSpec
 from .types import AudioChunk, SynthesisConfig
 
 SessionFactory = Callable[..., Any]
@@ -36,31 +46,86 @@ def _reduce_waveform(value: Any) -> np.ndarray:
         audio = np.squeeze(audio)
         if audio.ndim == 0:
             audio = audio.reshape(1)
-    return np.asarray(audio, dtype=np.float32)
+    audio = np.asarray(audio, dtype=np.float32)
+    if not np.all(np.isfinite(audio)):
+        raise ModelInferenceError("model returned non-finite audio")
+    return audio
+
+
+@dataclass(frozen=True, slots=True)
+class PiperInference:
+    audio: np.ndarray
+    sample_rate: int
+    timing_summary: Mapping[str, Any] | None = None
+    output_summary: Mapping[str, Any] = field(default_factory=dict)
 
 
 class PiperVoice:
-    """Independent ONNX synthesis runtime for a Piper-compatible voice model."""
+    """Piper policy and frontend wrapped around an OnnxVoice runtime."""
 
     def __init__(
         self,
-        session: Any,
+        runtime: Any,
         config: VoiceConfig,
         frontend: PiperFrontend,
         *,
         owns_frontend: bool = False,
-        session_manager: OnnxSessionManager | None = None,
         model_path: str | Path | None = None,
         config_path: str | Path | None = None,
+        installation: Any | None = None,
     ) -> None:
-        self.session = session
+        if not hasattr(runtime, "infer") and hasattr(runtime, "run"):
+            from .session import compatibility_runtime
+            runtime = compatibility_runtime(
+                runtime,
+                model_path=model_path or "<injected>",
+                config_path=config_path or "<injected>",
+                sample_rate=config.sample_rate,
+            )
+        self.runtime = runtime
         self.config = config
         self.frontend = frontend
         self._owns_frontend = owns_frontend
-        self._session_manager = session_manager
         self.model_path = Path(model_path) if model_path is not None else None
         self.config_path = Path(config_path) if config_path is not None else None
+        self.installation = installation
         self._closed = False
+
+    @classmethod
+    def _from_resolved(
+        cls,
+        resolved: ResolvedPiperVoice,
+        *,
+        providers: Sequence[ProviderSpec | ProviderConfig] | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+        session_options: Any | None = None,
+        frontend_options: Mapping[str, Any] | None = None,
+        frontend: PiperFrontend | None = None,
+    ) -> PiperVoice:
+        config = VoiceConfig.from_json(resolved.config_path)
+        owns_frontend = frontend is None
+        if frontend is None:
+            frontend = PiperFrontend(config, **dict(frontend_options or {}))
+        try:
+            runtime = open_installed_voice(
+                resolved,
+                providers=providers,
+                provider_options=provider_options,
+                session_options=session_options,
+            )
+        except Exception:
+            if owns_frontend:
+                frontend.close()
+            raise
+        return cls(
+            runtime,
+            config,
+            frontend,
+            owns_frontend=owns_frontend,
+            model_path=resolved.model_path,
+            config_path=resolved.config_path,
+            installation=resolved.installation,
+        )
 
     @classmethod
     def load(
@@ -75,7 +140,7 @@ class PiperVoice:
         frontend: PiperFrontend | None = None,
         frontend_options: Mapping[str, Any] | None = None,
     ) -> PiperVoice:
-        """Load an ONNX voice and its companion ``.onnx.json`` configuration."""
+        """Load an explicit local Piper model through OnnxVoice."""
 
         model = Path(model_path)
         if not model.exists():
@@ -87,25 +152,38 @@ class PiperVoice:
         owns_frontend = frontend is None
         if frontend is None:
             frontend = PiperFrontend(config, **dict(frontend_options or {}))
-        manager = OnnxSessionManager(
-            model,
-            providers=providers,
-            provider_options=provider_options,
-            session_options=session_options,
-            session_factory=session_factory,
-        )
         try:
-            session = manager.create(require_sid=config.num_speakers > 1)
+            if session_factory is not None:
+                from .session import compatibility_runtime
+
+                runtime = compatibility_runtime(
+                    session_factory(
+                        str(model),
+                        providers=providers,
+                        provider_options=provider_options,
+                        sess_options=session_options,
+                    ),
+                    model_path=model,
+                    config_path=config_file,
+                    sample_rate=config.sample_rate,
+                )
+            else:
+                runtime = open_local_voice(
+                    model,
+                    config_file,
+                    providers=providers,
+                    provider_options=provider_options,
+                    session_options=session_options,
+                )
         except Exception:
             if owns_frontend:
                 frontend.close()
             raise
         return cls(
-            session,
+            runtime,
             config,
             frontend,
             owns_frontend=owns_frontend,
-            session_manager=manager,
             model_path=model,
             config_path=config_file,
         )
@@ -123,22 +201,29 @@ class PiperVoice:
         provider_options: Mapping[str, Any] | None = None,
         session_options: Any | None = None,
         frontend_options: Mapping[str, Any] | None = None,
-        progress: Callable[..., Any] | None = None,
+        progress: Callable[[AssetProgressEvent], None] | None = None,
     ) -> PiperVoice:
-        from .asset_manager import VoiceAssetManager
-
-        manager = VoiceAssetManager(cache_dir, offline=offline, progress=progress)
-        bundle = manager.resolve_voice(
-            voice, refresh_catalog=refresh_catalog, force_download=force_download
+        resolved = install_pretrained_voice(
+            voice,
+            cache_dir=cache_dir,
+            offline=offline,
+            refresh_catalog=refresh_catalog,
+            force_download=force_download,
+            progress=progress,
         )
-        return cls.load(
-            bundle.model_path,
-            bundle.config_path,
+        return cls._from_resolved(
+            resolved,
             providers=providers,
             provider_options=provider_options,
             session_options=session_options,
             frontend_options=frontend_options,
         )
+
+    @property
+    def session(self) -> Any:
+        """Return the runtime session for diagnostics compatibility."""
+
+        return getattr(self.runtime, "session", None)
 
     @property
     def closed(self) -> bool:
@@ -147,24 +232,28 @@ class PiperVoice:
     @property
     def diagnostics(self) -> RuntimeDiagnostics:
         self._ensure_open()
+        runtime_fields = runtime_diagnostics(self.runtime)
         frontend_diagnostics = getattr(self.frontend, "diagnostics", None)
         frontend_name = getattr(frontend_diagnostics, "backend", None)
         speaker_names = tuple(getattr(self.config, "speaker_id_map", {}).keys())
-        fields = {
-            "config_path": str(self.config_path) if self.config_path is not None else None,
-            "sample_rate": self.config.sample_rate,
-            "num_symbols": self.config.num_symbols,
-            "num_speakers": self.config.num_speakers,
-            "speaker_names": speaker_names,
-            "phoneme_type": self.config.phoneme_type.value,
-            "espeak_voice": self.config.espeak_voice,
-            "frontend": frontend_name,
-        }
-        if self._session_manager is not None:
-            return self._session_manager.diagnostics(**fields)
         return RuntimeDiagnostics(
-            model_path=str(self.model_path) if self.model_path is not None else None,
-            **fields,
+            model_path=runtime_fields.get("model_path") or (
+                str(self.model_path) if self.model_path is not None else None
+            ),
+            config_path=runtime_fields.get("config_path") or (
+                str(self.config_path) if self.config_path is not None else None
+            ),
+            sample_rate=self.config.sample_rate,
+            num_symbols=self.config.num_symbols,
+            num_speakers=self.config.num_speakers,
+            speaker_names=speaker_names,
+            phoneme_type=self.config.phoneme_type.value,
+            espeak_voice=self.config.espeak_voice,
+            providers_requested=tuple(runtime_fields.get("providers_requested", ())),
+            providers_active=tuple(runtime_fields.get("providers_active", ())),
+            model_inputs=tuple(runtime_fields.get("model_inputs", ())),
+            model_outputs=tuple(runtime_fields.get("model_outputs", ())),
+            frontend=frontend_name,
         )
 
     def _ensure_open(self) -> None:
@@ -199,16 +288,15 @@ class PiperVoice:
             )
         return value
 
-    def _resolved_scales(self, syn: SynthesisConfig) -> np.ndarray:
-        return np.asarray(
-            [
-                self.config.noise_scale if syn.noise_scale is None else syn.noise_scale,
-                self.config.length_scale if syn.length_scale is None else syn.length_scale,
+    def _resolved_scales(self, syn: SynthesisConfig) -> tuple[float, float, float]:
+        return (
+            float(self.config.noise_scale if syn.noise_scale is None else syn.noise_scale),
+            float(self.config.length_scale if syn.length_scale is None else syn.length_scale),
+            float(
                 self.config.noise_w_scale
                 if syn.resolved_noise_w_scale is None
-                else syn.resolved_noise_w_scale,
-            ],
-            dtype=np.float32,
+                else syn.resolved_noise_w_scale
+            ),
         )
 
     def _validated_ids(self, phoneme_ids: Sequence[int]) -> list[int]:
@@ -227,6 +315,41 @@ class PiperVoice:
                 )
         return [int(identifier) for identifier in values]
 
+    def _infer_ids(
+        self,
+        phoneme_ids: Sequence[int],
+        syn_config: SynthesisConfig | None = None,
+    ) -> PiperInference:
+        self._ensure_open()
+        ids_values = self._validated_ids(phoneme_ids)
+        if not ids_values:
+            return PiperInference(np.zeros(0, dtype=np.float32), self.config.sample_rate)
+        syn = syn_config or SynthesisConfig()
+        speaker_id = self.resolve_speaker_id(syn.speaker_id)
+        noise_scale, length_scale, noise_w = self._resolved_scales(syn)
+        try:
+            result = self.runtime.infer(
+                ids_values,
+                speaker_id=speaker_id,
+                noise_scale=noise_scale,
+                length_scale=length_scale,
+                noise_w=noise_w,
+            )
+        except Exception as exc:
+            if isinstance(exc, ModelInferenceError):
+                raise
+            raise ModelInferenceError("ONNX model inference failed") from exc
+        if result is None or not hasattr(result, "audio"):
+            raise ModelInferenceError("ONNX model returned no audio output")
+        sample_rate = int(getattr(result, "sample_rate", 0))
+        if sample_rate != self.config.sample_rate:
+            raise ModelInferenceError(
+                f"model sample rate {sample_rate} does not match voice config {self.config.sample_rate}"
+            )
+        audio = _reduce_waveform(result.audio)
+        timing_summary, output_summary = summarize_inference(result)
+        return PiperInference(audio, sample_rate, timing_summary, output_summary)
+
     def synthesize_ids(
         self,
         phoneme_ids: Sequence[int],
@@ -234,29 +357,13 @@ class PiperVoice:
     ) -> np.ndarray:
         """Run acoustic inference from already encoded phoneme IDs."""
 
-        self._ensure_open()
-        ids_values = self._validated_ids(phoneme_ids)
-        if not ids_values:
-            return np.zeros(0, dtype=np.float32)
         syn = syn_config or SynthesisConfig()
-        speaker_id = self.resolve_speaker_id(syn.speaker_id)
-        ids = np.asarray([ids_values], dtype=np.int64)
-        args: dict[str, np.ndarray] = {
-            "input": ids,
-            "input_lengths": np.asarray([ids.shape[1]], dtype=np.int64),
-            "scales": self._resolved_scales(syn),
-        }
-        if self.config.num_speakers > 1:
-            assert speaker_id is not None
-            args["sid"] = np.asarray([speaker_id], dtype=np.int64)
-        try:
-            result = self.session.run(None, args)
-        except Exception as exc:
-            raise ModelInferenceError("ONNX model inference failed") from exc
-        if not result:
-            raise ModelInferenceError("ONNX model returned no outputs")
-        audio = _reduce_waveform(result[0])
-        return postprocess_audio(audio, normalize=syn.normalize_audio, volume=syn.volume)
+        inference = self._infer_ids(phoneme_ids, syn)
+        return postprocess_audio(
+            inference.audio,
+            normalize=syn.normalize_audio,
+            volume=syn.volume,
+        )
 
     def synthesize(
         self,
@@ -353,17 +460,16 @@ class PiperVoice:
 
     def warmup(self) -> None:
         self._ensure_open()
-        if self._session_manager is not None:
-            self._session_manager.create(require_sid=self.config.num_speakers > 1)
+        _ = self.session
 
     def close(self) -> None:
         if self._closed:
             return
         if self._owns_frontend:
             self.frontend.close()
-        if self._session_manager is not None:
-            self._session_manager.close()
-        self.session = None
+        close = getattr(self.runtime, "close", None)
+        if close is not None:
+            close()
         self._closed = True
 
     def __enter__(self) -> PiperVoice:

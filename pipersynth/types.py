@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Literal
 
 import numpy as np
+from audiocompose import write_wav as compose_write_wav
 from utterplan import UtterancePlan
 
 from .audio import audio_to_int16_bytes, float_to_int16, write_wav
@@ -178,7 +179,10 @@ class AudioResult:
         return audio_to_int16_bytes(self.audio)
 
     def save_wav(self, target: str | Path | BinaryIO) -> str | Path | BinaryIO:
-        write_wav(target, self.audio, self.sample_rate)
+        if isinstance(target, (str, Path)):
+            compose_write_wav(target, self.audio, self.sample_rate)
+        else:
+            write_wav(target, self.audio, self.sample_rate)
         return target
 
     def play(self, *, wait: bool = True) -> None:

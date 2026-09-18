@@ -1,165 +1,135 @@
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
+import onnxvoice
 import pytest
 
 from pipersynth.asset_manager import VoiceAssetManager
-from pipersynth.errors import AssetCacheError, AssetDownloadError, OfflineAssetError
+from pipersynth.errors import OfflineAssetError
 
 
-def _fake_catalog() -> tuple[dict, dict[str, bytes]]:
-    files = {"MODEL_CARD": b"license", "test.onnx": b"model", "test.onnx.json": b"config"}
-    artifacts = {}
-    for role, filename in (
-        ("model_card", "MODEL_CARD"),
-        ("model", "test.onnx"),
-        ("config", "test.onnx.json"),
-    ):
-        data = files[filename]
-        artifacts[role] = {
-            "role": role,
-            "path": filename,
-            "filename": filename,
-            "url": f"test://{filename}",
-            "size": len(data),
-            "md5": hashlib.md5(data, usedforsecurity=False).hexdigest(),
+class FakeInstallation:
+    def __init__(self, root: Path) -> None:
+        self.system = "piper"
+        self.id = "en_US-test-medium"
+        self.kind = "voice"
+        self.path = root
+        self.metadata = {
+            "name": "Test voice",
+            "language": {"code": "en_US", "family": "en", "region": "US"},
+            "quality": "medium",
+            "num_speakers": 1,
+            "speaker_id_map": {},
+            "source_revision": "a" * 40,
         }
-    entry = {
-        "id": "en_US-test-medium",
+        self._artifacts = {
+            "model": SimpleNamespace(path=root / "test.onnx"),
+            "config": SimpleNamespace(path=root / "test.onnx.json"),
+            "model_card": SimpleNamespace(path=root / "MODEL_CARD"),
+        }
+
+    @property
+    def ref(self) -> str:
+        return f"{self.system}:{self.id}"
+
+    def artifact(self, role: str):
+        return self._artifacts[role]
+
+
+class FakeCatalogItem:
+    id = "en_US-test-medium"
+    aliases = ("test",)
+    metadata = {
         "name": "Test voice",
         "language": {"code": "en_US", "family": "en", "region": "US"},
         "quality": "medium",
         "num_speakers": 1,
         "speaker_id_map": {},
-        "aliases": ["test"],
-        "artifacts": artifacts,
+        "source_revision": "a" * 40,
     }
-    return {"source": {"revision": "a" * 40}, "voices": {entry["id"]: entry}}, files
 
 
-def _manager(
-    tmp_path: Path, *, offline: bool = False, progress=None
-) -> tuple[VoiceAssetManager, dict, dict[str, bytes]]:
-    catalog, files = _fake_catalog()
-    manager = VoiceAssetManager(tmp_path, offline=offline, progress=progress)
-    manager.catalog_path.parent.mkdir(parents=True)
-    manager.catalog_path.write_text("ignored")
+class FakeOnnxVoice:
+    installation: FakeInstallation
+    calls: list[tuple[str, object]] = []
 
-    def download(voice, target, *, overwrite=False):
-        target.mkdir(parents=True, exist_ok=True)
-        for filename, data in files.items():
-            destination = target / filename
-            if destination.exists() and not overwrite:
-                continue
-            destination.write_bytes(data)
+    def __init__(self, cache_dir=None, catalog_sources=None, offline=False):
+        self.cache_dir = Path(cache_dir) if cache_dir is not None else Path(".")
+        self.catalog_sources = catalog_sources
+        self.offline = offline
+        self.installation = FakeOnnxVoice.installation
 
-    def get_voice(value, voice_id):
-        if voice_id == "test":
-            voice_id = "en_US-test-medium"
-        return value["voices"][voice_id]
+    def install(self, ref, **kwargs):
+        self.calls.append(("install", (ref, kwargs)))
+        if self.offline:
+            from onnxvoice.errors import OfflineError
 
-    def list_voices(value, *, language=None, quality=None):
-        return list(value["voices"].values())
+            raise OfflineError("offline")
+        progress = kwargs.get("progress")
+        if progress:
+            progress(SimpleNamespace(phase="download_started", ref=ref, message="download"))
+            progress(SimpleNamespace(phase="download_completed", ref=ref, message="done"))
+        return self.installation
 
-    manager._catalog_dependency = lambda: (
-        ValueError,
-        RuntimeError,
-        download,
-        lambda: catalog,
-        get_voice,
-        list_voices,
-        lambda path: catalog,
-    )
-    return manager, catalog, files
+    def list(self, system, **kwargs):
+        self.calls.append(("list", (system, kwargs)))
+        return [FakeCatalogItem()]
+
+    def installed(self, system=None):
+        return [self.installation]
+
+    def resolve(self, ref):
+        return self.installation
+
+    def where(self, ref):
+        return self.installation.path
+
+    def remove(self, ref):
+        self.calls.append(("remove", ref))
 
 
-def test_explicit_cache_path_and_alias_resolution(tmp_path: Path) -> None:
+@pytest.fixture
+def fake_onnxvoice(tmp_path: Path, monkeypatch):
+    root = tmp_path / "voice"
+    root.mkdir()
+    (root / "test.onnx").write_bytes(b"model")
+    (root / "test.onnx.json").write_text("{}")
+    (root / "MODEL_CARD").write_text("license")
+    FakeOnnxVoice.installation = FakeInstallation(root)
+    FakeOnnxVoice.calls = []
+    monkeypatch.setattr(onnxvoice, "OnnxVoice", FakeOnnxVoice)
+    return root
+
+
+def test_asset_manager_delegates_managed_install_and_adapts_progress(fake_onnxvoice, tmp_path):
     events = []
-    manager, _, _ = _manager(tmp_path, progress=events.append)
-    bundle = manager.resolve_voice("test")
+    manager = VoiceAssetManager(tmp_path, progress=events.append)
+    bundle = manager.resolve_voice("test", refresh_catalog=True, force_download=True)
+
     assert bundle.voice_id == "en_US-test-medium"
     assert bundle.model_card_text == "license"
-    assert bundle.directory == tmp_path / "voices" / "en_US-test-medium"
-    assert [event.phase for event in events] == [
-        "catalog-load",
-        "voice-resolve",
-        "download-start",
-        "download-complete",
-    ]
+    assert FakeOnnxVoice.calls[0][0] == "install"
+    ref, options = FakeOnnxVoice.calls[0][1]
+    assert ref == "piper:test"
+    assert options["refresh"] is True
+    assert options["force"] is True
+    assert [event.phase for event in events] == ["download-start", "download-complete"]
 
 
-def test_cached_voice_is_reused_and_emits_cache_hit(tmp_path: Path) -> None:
-    events = []
-    manager, _, _ = _manager(tmp_path, progress=events.append)
-    manager.resolve_voice("test")
-    events.clear()
-    manager.resolve_voice("en_US-test-medium")
-    assert [event.phase for event in events] == ["catalog-load", "voice-resolve", "cache-hit"]
+def test_asset_manager_lists_metadata_and_cached_installations(fake_onnxvoice, tmp_path):
+    manager = VoiceAssetManager(tmp_path)
+    metadata = manager.get_voice_metadata("test")
+
+    assert metadata.id == "en_US-test-medium"
+    assert metadata.language_code == "en_US"
+    assert manager.cached_voices()[0].voice_id == metadata.id
     assert manager.is_voice_cached("test")
+    assert manager.voice_cache_path("test").name == "voice"
 
 
-def test_force_download_overwrites_even_valid_cache(tmp_path: Path) -> None:
-    manager, _, _ = _manager(tmp_path)
-    manager.resolve_voice("test")
-    calls = []
-    original = manager._catalog_dependency
-    dependencies = original()
-
-    def download(*args, **kwargs):
-        calls.append(True)
-        return dependencies[2](*args, **kwargs)
-
-    manager._catalog_dependency = lambda: (*dependencies[:2], download, *dependencies[3:])
-    manager.resolve_voice("test", force_download=True)
-    assert calls == [True]
-
-
-def test_offline_missing_assets_raise(tmp_path: Path) -> None:
-    manager, _, _ = _manager(tmp_path, offline=True)
+def test_asset_manager_translates_onnxvoice_offline_error(fake_onnxvoice, tmp_path):
+    manager = VoiceAssetManager(tmp_path, offline=True)
     with pytest.raises(OfflineAssetError):
         manager.resolve_voice("test")
-
-
-def test_corrupt_cache_requires_force_download(tmp_path: Path) -> None:
-    manager, _, _ = _manager(tmp_path)
-    target = tmp_path / "voices" / "en_US-test-medium"
-    target.mkdir(parents=True)
-    (target / "MODEL_CARD").write_bytes(b"wrong")
-    with pytest.raises(AssetCacheError):
-        manager.resolve_voice("test")
-    bundle = manager.resolve_voice("test", force_download=True)
-    assert bundle.model_card_text == "license"
-
-
-def test_download_errors_are_wrapped(tmp_path: Path) -> None:
-    manager, _, _ = _manager(tmp_path)
-
-    def fail(*args, **kwargs):
-        raise RuntimeError("download failed")
-
-    manager._catalog_dependency = lambda: (
-        ValueError,
-        RuntimeError,
-        fail,
-        lambda: _fake_catalog()[0],
-        lambda catalog, voice: (
-            catalog["voices"]["en_US-test-medium"] if voice == "test" else catalog["voices"][voice]
-        ),
-        lambda catalog, **kwargs: list(catalog["voices"].values()),
-        lambda path: _fake_catalog()[0],
-    )
-    with pytest.raises(AssetDownloadError):
-        manager.resolve_voice("test")
-
-
-def test_environment_cache_path_wins_when_no_explicit_path(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("PIPERSYNTH_CACHE_DIR", str(tmp_path))
-    assert VoiceAssetManager().cache_dir == tmp_path
-
-
-def test_refresh_is_rejected_offline(tmp_path: Path) -> None:
-    manager, _, _ = _manager(tmp_path, offline=True)
-    with pytest.raises(OfflineAssetError):
-        manager.list_voices(refresh=True)
