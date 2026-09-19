@@ -13,6 +13,7 @@ from .errors import (
     UnsupportedPlanLanguageError,
     VoiceBindingError,
 )
+from .loudness_config import LoudnessConfig
 from .types import SynthesisConfig
 
 
@@ -116,6 +117,7 @@ def _segment_synthesis(
     segment: PlanSegment,
     voice: Any,
     generation: GenerationConfig,
+    loudness: LoudnessConfig,
     directive_policy: str,
 ) -> tuple[SynthesisConfig, list[str]]:
     warnings: list[str] = []
@@ -173,6 +175,7 @@ def _segment_synthesis(
             noise_w_scale=generation.noise_w_scale,
             normalize_audio=generation.normalize_audio,
             volume=volume,
+            loudness=loudness,
         ),
         warnings,
     )
@@ -221,6 +224,7 @@ def prepare_plan(
     voice: Any,
     generation: GenerationConfig,
     *,
+    loudness: LoudnessConfig | None = None,
     directive_policy: Literal["error", "warn", "ignore"] = "error",
     language_policy: Literal["strict", "allow"] = "strict",
     language_aliases: Mapping[str, str] | None = None,
@@ -229,6 +233,7 @@ def prepare_plan(
 
     plan.validate()
     aliases = dict(language_aliases or {})
+    effective_loudness = loudness or LoudnessConfig()
     segments = {segment.id: segment for segment in plan.segments}
     prepared_units: list[PreparedPiperUnit] = []
     for unit in plan.units:
@@ -241,7 +246,7 @@ def prepare_plan(
                 else normalize_language(segment.language, aliases)
             )
             synthesis, directive_warnings = _segment_synthesis(
-                plan, segment, voice, generation, directive_policy
+                plan, segment, voice, generation, effective_loudness, directive_policy
             )
             pronunciation = segment.directives.pronunciation
             if pronunciation is not None and pronunciation.alphabet not in {"ipa", "espeak-ipa3"}:

@@ -47,11 +47,22 @@ from .errors import (
     VoiceClosedError,
     VoiceNotFoundError,
 )
+from .loudness_config import LoudnessConfig, PeakPolicy, VoiceLevelingMode, coerce_loudness
 from .pipeline import PiperPipeline, PreparedAudioUnits, build_pipeline
 from .preparation import IdentityTextPreparer, PreparedTextResult, SpokenformTextPreparer
 from .session import ProviderConfig, available_providers
 from .types import AudioChunk, AudioResult, AudioUnitDescriptor, AudioUnitResult, SynthesisConfig
 from .voice import PiperVoice
+from .voice_level import (
+    CalibrationDataError,
+    VoiceCalibrationCatalog,
+    VoiceCalibrationKey,
+    VoiceLevelApplication,
+    VoiceLevelCalibration,
+    apply_voice_level_calibration,
+    default_voice_calibration,
+    load_voice_calibration,
+)
 
 __all__ = [
     "AudioChunk",
@@ -65,6 +76,10 @@ __all__ = [
     "AssetProgressEvent",
     "GenerationConfig",
     "LinguisticsConfig",
+    "LoudnessConfig",
+    "PeakPolicy",
+    "VoiceLevelingMode",
+    "coerce_loudness",
     "PauseConfig",
     "PlannerConfig",
     "SSMDConfig",
@@ -84,6 +99,14 @@ __all__ = [
     "InvalidSynthesisConfigError",
     "ModelFileNotFoundError",
     "ModelInferenceError",
+    "CalibrationDataError",
+    "VoiceCalibrationCatalog",
+    "VoiceCalibrationKey",
+    "VoiceLevelApplication",
+    "VoiceLevelCalibration",
+    "apply_voice_level_calibration",
+    "default_voice_calibration",
+    "load_voice_calibration",
     "ModelLoadError",
     "OptionalDependencyError",
     "OfflineAssetError",

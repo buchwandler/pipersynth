@@ -23,6 +23,7 @@ from .composition import audio_result_from_composition
 from .config import GenerationConfig, PipelineConfig
 from .diagnostics import TimingDiagnostics
 from .errors import ConfigFileNotFoundError, OptionalDependencyError, VoiceClosedError
+from .loudness_config import LoudnessConfig, coerce_loudness
 from .plan_adapter import PreparedPiperUnit
 from .plan_adapter import prepare_plan as adapt_plan
 from .planning import inspect_voice_config, planner_config_from_pipersynth
@@ -192,6 +193,7 @@ class PiperPipeline:
         force_download: bool = False,
         generation: GenerationConfig | None = None,
         providers: Any | None = None,
+        loudness: LoudnessConfig | Mapping[str, object] | None = None,
         provider_options: Mapping[str, Any] | None = None,
         session_options: Any | None = None,
         frontend_options: Mapping[str, Any] | None = None,
@@ -225,6 +227,7 @@ class PiperPipeline:
             model_path=bundle.model_path,
             config_path=bundle.config_path,
             generation=generation or GenerationConfig(),
+            loudness=coerce_loudness(loudness),
             providers=providers,
             provider_options=provider_options,
             session_options=session_options,
@@ -289,14 +292,26 @@ class PiperPipeline:
             if self._voice_factory is not None:
                 self._voice = self._voice_factory(self.config)
             else:
-                self._voice = PiperVoice.load(
-                    self.config.model_path,
-                    self.config.config_path,
-                    providers=self.config.providers,
-                    provider_options=self.config.provider_options,
-                    session_options=self.config.session_options,
-                    frontend_options=self.config.frontend_options,
-                )
+                if (
+                    self._voice_bundle is not None
+                    and getattr(self._voice_bundle, "installation", None) is not None
+                ):
+                    self._voice = PiperVoice.from_bundle(
+                        self._voice_bundle,
+                        providers=self.config.providers,
+                        provider_options=self.config.provider_options,
+                        session_options=self.config.session_options,
+                        frontend_options=self.config.frontend_options,
+                    )
+                else:
+                    self._voice = PiperVoice.load(
+                        self.config.model_path,
+                        self.config.config_path,
+                        providers=self.config.providers,
+                        provider_options=self.config.provider_options,
+                        session_options=self.config.session_options,
+                        frontend_options=self.config.frontend_options,
+                    )
         return self._voice
 
     @property
@@ -339,7 +354,12 @@ class PiperPipeline:
             "directive_policy",
             "language_policy",
         }
-        unknown = set(overrides) - generation_fields - planner_fields
+        unknown = set(overrides) - generation_fields - planner_fields - {"loudness"}
+        loudness = (
+            coerce_loudness(overrides["loudness"])
+            if "loudness" in overrides
+            else self.config.loudness
+        )
         if unknown:
             names = ", ".join(sorted(unknown))
             raise TypeError(f"unknown run override(s): {names}")
@@ -348,7 +368,7 @@ class PiperPipeline:
             **{key: value for key, value in overrides.items() if key in generation_fields},
         )
         pipeline = {key: value for key, value in overrides.items() if key in planner_fields}
-        return replace(self.config, generation=generation, **pipeline)
+        return replace(self.config, generation=generation, loudness=loudness, **pipeline)
 
     def _planner_config(self, config: PipelineConfig) -> Any:
         planner = self._ensure_planner(config)
@@ -374,7 +394,9 @@ class PiperPipeline:
         planner, planner_config = self._planner_config(config)
         return planner.plan(text, config=planner_config, unit=unit)
 
-    def _to_synthesis_config(self, generation: GenerationConfig) -> SynthesisConfig:
+    def _to_synthesis_config(
+        self, generation: GenerationConfig, loudness: LoudnessConfig | None = None
+    ) -> SynthesisConfig:
         return SynthesisConfig(
             speaker_id=self.voice.resolve_speaker_id(generation.speaker),
             length_scale=generation.length_scale,
@@ -382,6 +404,7 @@ class PiperPipeline:
             noise_w_scale=generation.noise_w_scale,
             normalize_audio=generation.normalize_audio,
             volume=generation.volume,
+            loudness=loudness or LoudnessConfig(),
         )
 
     def prepare_plan(self, plan: UtterancePlan, **render_overrides: Any) -> PreparedAudioUnits:
@@ -414,6 +437,7 @@ class PiperPipeline:
             plan,
             self.voice,
             effective.generation,
+            loudness=effective.loudness,
             directive_policy=effective.directive_policy,
             language_policy=effective.language_policy,
             language_aliases=effective.language_aliases,
@@ -428,6 +452,12 @@ class PiperPipeline:
     ) -> PiperAudioJobContext:
         self._ensure_open()
         plan.validate()
+        config = render_overrides.get("config")
+        effective = (
+            config
+            if isinstance(config, PipelineConfig)
+            else self._resolve_run_config(render_overrides)
+        )
         prepared = self.prepare_plan(plan, **dict(render_overrides))
         try:
             return build_audio_job_context(
@@ -435,6 +465,7 @@ class PiperPipeline:
                 prepared_units=prepared._prepared_units,
                 voice=self.voice,
                 voice_id=getattr(self._voice_bundle, "voice_id", None),
+                loudness=effective.loudness,
             )
         finally:
             prepared.close()
@@ -446,6 +477,12 @@ class PiperPipeline:
     def render_plan(self, plan: UtterancePlan, **render_overrides: Any) -> AudioResult:
         self._ensure_open()
         plan.validate()
+        config = render_overrides.get("config")
+        effective = (
+            config
+            if isinstance(config, PipelineConfig)
+            else self._resolve_run_config(render_overrides)
+        )
         started = time.perf_counter()
         context = self._build_audio_job_context(plan, **render_overrides)
         composition_started = time.perf_counter()
@@ -491,6 +528,19 @@ class PiperPipeline:
                 "provider": self.voice.diagnostics.providers_active,
             }
         )
+        application = getattr(self.voice, "last_voice_level_application", None)
+        if application is not None:
+            result.metadata.update(
+                {
+                    "voice_leveling_mode": effective.loudness.voice_leveling,
+                    "voice_calibration_key": str(application.key) if application.key else None,
+                    "voice_calibration_gain_db": application.gain_db,
+                    "voice_calibration_source": application.source,
+                    "voice_calibration_corpus": getattr(
+                        getattr(self.voice, "_calibration_catalog", None), "corpus", None
+                    ),
+                }
+            )
         return result
 
     def prepare_units(
@@ -503,6 +553,10 @@ class PiperPipeline:
         effective = self._resolve_run_config(
             {**overrides, **({"unit": unit} if unit is not None else {})}
         )
+        if effective.loudness.target_lufs is not None:
+            raise ValueError(
+                "target_lufs requires complete output and is not supported for streaming"
+            )
         plan = self.plan(
             text,
             unit=effective.unit,
@@ -553,7 +607,9 @@ class PiperPipeline:
                 item for item in getattr(result, "tokens", ()) if hasattr(item, "ids")
             )
         ids = tuple(identifier for sentence in sentences for identifier in sentence.ids)
-        audio = self.voice.synthesize_ids(ids, self._to_synthesis_config(config.generation))
+        audio = self.voice.synthesize_ids(
+            ids, self._to_synthesis_config(config.generation, config.loudness)
+        )
         return AudioResult(
             audio=audio,
             sample_rate=self.voice.config.sample_rate,

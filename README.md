@@ -98,6 +98,28 @@ with PiperPipeline(PipelineConfig(model_path="voice.onnx")) as pipe:
 
 `PiperVoice.load()` and `PiperPipeline(PipelineConfig(...))` never resolve the catalog or download assets. Use `PiperVoice.from_pretrained()` or `PiperPipeline.from_pretrained()` when managed catalog resources are desired.
 
+## Calibrated voice leveling
+
+PiperSynth can apply a fixed, offline-measured gain for an exact managed Piper catalog voice, quality, and numeric speaker identity:
+
+```python
+from pipersynth import LoudnessConfig, PiperPipeline
+
+with PiperPipeline.from_pretrained(
+    "en_US-lessac-medium",
+    loudness=LoudnessConfig(voice_leveling="calibrated"),
+) as pipe:
+    result = pipe.run("Hello from PiperSynth.")
+```
+
+Calibrated voice leveling is not dynamic normalization: synthesis never measures LUFS and the gain does not guarantee a final LUFS value for arbitrary text. It is applied after legacy peak normalization, before user or SSMD volume, and before the final clamp. `voice_gain_db` is an explicit gain override and works for managed and local voices.
+
+Calibration keys are canonical `piper:model-id:quality:speaker-N` identities. Every speaker in a multi-speaker catalog model is measured independently; single-speaker models use `speaker-0`. Anonymous local models have no guessed catalog key, and missing records are safe no-ops with diagnostic metadata.
+
+Complete-output normalization remains separate. Set `target_lufs` in `LoudnessConfig` only for batch composition; true streaming APIs reject it rather than normalizing each unit independently.
+
+The packaged catalog is generated from corpus `pipersynth-count-1-to-10-v1` at reference `-24 LUFS` with a `-1 dBTP` calibration ceiling. To regenerate it, run the full unfiltered benchmark, review `summary.md`, then promote its report with `benchmarks/voice_loudness_calibration.py`. Benchmark output is written below `benchmarks/output/` and never overwrites production data automatically.
+
 ## Voice discovery and cache
 
 ```python

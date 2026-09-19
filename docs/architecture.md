@@ -42,3 +42,26 @@ OnnxVoice returns raw model audio. PiperSynth resolves speaker IDs and scalar sy
 Use `with PiperVoice.load(...)` and `with PiperPipeline(...)` where possible. `close()` is idempotent and closes prepared plans, the planner, and owned OnnxVoice runtimes. Injected voice factories and planners remain caller-managed dependencies.
 
 The package is clean-room independent from Piper's GPL runtime. Compatibility is expressed through the external model protocol, voice configuration, and public behavior, not copied implementation code.
+
+## Offline voice loudness calibration
+
+Voice leveling is an offline catalog-data flow, not a synthesis-time measurement:
+
+```text
+complete OnnxVoice Piper catalog
+  -> expand every numeric speaker
+  -> count 1..10 stimulus per locale
+  -> three repeats with leveling off and normalize_audio=True
+  -> audiosig BS.1770 integrated LUFS and true peak
+  -> median/MAD and headroom-safe gain
+  -> reviewable schema-2 report
+  -> strict promotion to runtime schema 1
+```
+
+Managed pipelines retain the `VoiceBundle.installation`, so runtime lookup uses the canonical installation ID, metadata quality, and resolved numeric speaker. Local path loads intentionally have no catalog identity. The exact key is `piper:model-id:quality:speaker-N`; aliases and display names are never used as calibration identities.
+
+Runtime processing is `raw inference -> optional legacy peak normalization -> static catalog or override gain -> user/segment volume -> finite validation -> one final clamp`. The static gain is cheap and deterministic. Missing identity or missing record produces a zero-gain diagnostic rather than a fuzzy substitution.
+
+`target_lufs` is a separate complete-output `AudioCompose` policy. It is valid for composed batch output and rejected by true streaming APIs because normalizing each streamed unit would not normalize the finished document. The benchmark uses `voice_leveling="off"`, `target_lufs=None`, `normalize_audio=True`, and volume `1.0` so its measurements match the shipped processing baseline.
+
+The benchmark enumerates the complete current `VoiceAssetManager.list_voices(refresh=True)` inventory and expands `range(max(1, num_speakers))`. Filtered or offline runs are development evidence only and cannot pass the full-coverage promotion gate. Production promotion validates provenance, policy, repeat count, finite values, MAD, exact identities, and coverage, recomputes true-peak-safe gains, strips benchmark-only fields, and refuses the packaged output path.

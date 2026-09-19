@@ -19,6 +19,7 @@ from utterplan import UtterancePlan
 
 from . import __version__
 from .audio import postprocess_audio
+from .loudness_config import LoudnessConfig
 from .plan_adapter import PreparedPiperSegment, PreparedPiperUnit
 
 
@@ -85,11 +86,24 @@ def render_segment(
     if prepared.phoneme_ids:
         if hasattr(voice, "_infer_ids"):
             inference = voice._infer_ids(prepared.phoneme_ids, prepared.synthesis)
-            audio = postprocess_audio(
-                inference.audio,
-                normalize=prepared.synthesis.normalize_audio,
-                volume=prepared.synthesis.volume,
-            )
+            if hasattr(voice, "postprocess_inference"):
+                audio = voice.postprocess_inference(inference.audio, prepared.synthesis)
+            else:
+                audio = postprocess_audio(
+                    inference.audio,
+                    normalize=prepared.synthesis.normalize_audio,
+                    volume=prepared.synthesis.volume,
+                )
+            application = getattr(voice, "last_voice_level_application", None)
+            if application is not None:
+                inference_metadata.update(
+                    {
+                        "voice_leveling_mode": prepared.synthesis.loudness.voice_leveling,
+                        "voice_calibration_key": str(application.key) if application.key else None,
+                        "voice_calibration_gain_db": application.gain_db,
+                        "voice_calibration_source": application.source,
+                    }
+                )
             if inference.timing_summary is not None:
                 inference_metadata["pipersynth.onnx_timings"] = _json_safe(inference.timing_summary)
             if inference.output_summary:
@@ -142,6 +156,7 @@ def build_audio_job_context(
     prepared_units: Sequence[PreparedPiperUnit],
     voice: Any,
     voice_id: str | None,
+    loudness: LoudnessConfig | None = None,
     producer_version: str = __version__,
 ) -> PiperAudioJobContext:
     segments_by_id = {segment.id: segment for segment in plan.segments}
@@ -254,7 +269,15 @@ def build_audio_job_context(
     output = OutputPolicy(
         sample_rate=voice.config.sample_rate,
         channels=1,
-        loudness=LoudnessPolicy(target_lufs=None, true_peak_ceiling_dbtp=None),
+        loudness=LoudnessPolicy(
+            target_lufs=loudness.target_lufs if loudness is not None else None,
+            true_peak_ceiling_dbtp=(
+                loudness.true_peak_ceiling_dbtp
+                if loudness is not None and loudness != LoudnessConfig()
+                else None
+            ),
+            peak_policy=loudness.peak_policy if loudness is not None else "reduce_gain",
+        ),
         clip_policy="clamp",
     )
     producer = {"name": "pipersynth", "version": producer_version}

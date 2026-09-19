@@ -16,7 +16,8 @@ dependencies = [
   "piperg2p",
   "onnxvoice>=0.1,<0.2",
   "audiocompose>=0.1,<0.2",
-]
+  "audiosig>=0.1.4,<0.2",
+ ]
 keywords = ["tts", "text-to-speech", "piper", "onnx", "speech", "onnxruntime"]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -60,7 +61,7 @@ markers = [
 addopts = "-q --strict-markers"
 
 [tool.setuptools.package-data]
-pipersynth = ["py.typed"]
+pipersynth = ["py.typed", "data/*.json"]
 
 [tool.setuptools_scm]
 write_to = "pipersynth/_version.py"

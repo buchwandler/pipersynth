@@ -10,6 +10,7 @@ from utterplan import LinguisticsConfig, PauseConfig, SSMDConfig
 
 from ._warnings import warn_external
 from .errors import InvalidSynthesisConfigError
+from .loudness_config import LoudnessConfig
 from .session import ProviderConfig, ProviderSpec
 
 
@@ -63,6 +64,7 @@ class PipelineConfig:
     model_path: Path | str
     config_path: Path | str | None = None
     generation: GenerationConfig = field(default_factory=GenerationConfig)
+    loudness: LoudnessConfig = field(default_factory=LoudnessConfig)
     providers: tuple[ProviderSpec | ProviderConfig, ...] | None = None
     provider_options: Mapping[str, Any] | None = None
     session_options: Any | None = None
@@ -85,6 +87,8 @@ class PipelineConfig:
     return_diagnostics: bool = True
 
     def __post_init__(self) -> None:
+        if not isinstance(self.loudness, LoudnessConfig):
+            raise ValueError("loudness must be a LoudnessConfig")
         if self.document_format not in {"plain", "ssmd"}:
             raise ValueError("document_format must be 'plain' or 'ssmd'")
         if self.text_preparation not in {"identity", "spokenform"}:

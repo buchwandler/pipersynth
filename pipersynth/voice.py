@@ -18,7 +18,7 @@ from ._onnxvoice import (
     summarize_inference,
 )
 from .asset_progress import AssetProgressEvent
-from .audio import postprocess_audio, silence_samples
+from .audio import finish_audio, prepare_audio, silence_samples
 from .diagnostics import RuntimeDiagnostics
 from .errors import (
     ConfigFileNotFoundError,
@@ -29,6 +29,7 @@ from .errors import (
 )
 from .session import ProviderConfig, ProviderSpec
 from .types import AudioChunk, SynthesisConfig
+from .voice_level import VoiceCalibrationKey, VoiceLevelApplication, apply_voice_level_calibration
 
 SessionFactory = Callable[..., Any]
 
@@ -92,6 +93,8 @@ class PiperVoice:
         self.installation = installation
         self._closed = False
 
+        self._last_voice_level_application: VoiceLevelApplication | None = None
+
     @classmethod
     def _from_resolved(
         cls,
@@ -126,6 +129,36 @@ class PiperVoice:
             model_path=resolved.model_path,
             config_path=resolved.config_path,
             installation=resolved.installation,
+        )
+
+    @classmethod
+    def from_bundle(
+        cls,
+        bundle: Any,
+        *,
+        providers: Sequence[ProviderSpec | ProviderConfig] | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+        session_options: Any | None = None,
+        frontend_options: Mapping[str, Any] | None = None,
+    ) -> PiperVoice:
+        """Load a managed VoiceBundle without discarding its catalog identity."""
+        if getattr(bundle, "installation", None) is None:
+            return cls.load(
+                bundle.model_path,
+                bundle.config_path,
+                providers=providers,
+                provider_options=provider_options,
+                session_options=session_options,
+                frontend_options=frontend_options,
+            )
+        from ._onnxvoice import installation_to_voice_info
+
+        return cls._from_resolved(
+            installation_to_voice_info(bundle.installation),
+            providers=providers,
+            provider_options=provider_options,
+            session_options=session_options,
+            frontend_options=frontend_options,
         )
 
     @classmethod
@@ -287,6 +320,25 @@ class PiperVoice:
             )
         return value
 
+    def calibration_key(self, syn_config: SynthesisConfig) -> VoiceCalibrationKey | None:
+        """Return the exact managed Piper identity used by calibration lookup."""
+        self._ensure_open()
+        if self.installation is None:
+            return None
+        model_id = getattr(self.installation, "id", None)
+        metadata = getattr(self.installation, "metadata", {}) or {}
+        quality = metadata.get("quality") if isinstance(metadata, Mapping) else None
+        if not isinstance(model_id, str) or not model_id:
+            return None
+        if not isinstance(quality, str) or not quality:
+            return None
+        speaker_id = self.resolve_speaker_id(syn_config.speaker_id)
+        return VoiceCalibrationKey("piper", model_id, quality, f"speaker-{speaker_id or 0}")
+
+    @property
+    def last_voice_level_application(self) -> VoiceLevelApplication | None:
+        return self._last_voice_level_application
+
     def _resolved_scales(self, syn: SynthesisConfig) -> tuple[float, float, float]:
         return (
             float(self.config.noise_scale if syn.noise_scale is None else syn.noise_scale),
@@ -349,6 +401,18 @@ class PiperVoice:
         timing_summary, output_summary = summarize_inference(result)
         return PiperInference(audio, sample_rate, timing_summary, output_summary)
 
+    def postprocess_inference(
+        self,
+        audio: np.ndarray,
+        syn_config: SynthesisConfig,
+    ) -> np.ndarray:
+        """Apply shared runtime audio processing and static voice leveling."""
+        prepared = prepare_audio(audio, normalize=syn_config.normalize_audio)
+        key = self.calibration_key(syn_config)
+        calibrated, application = apply_voice_level_calibration(prepared, syn_config.loudness, key)
+        self._last_voice_level_application = application
+        return finish_audio(calibrated, volume=syn_config.volume)
+
     def synthesize_ids(
         self,
         phoneme_ids: Sequence[int],
@@ -358,11 +422,7 @@ class PiperVoice:
 
         syn = syn_config or SynthesisConfig()
         inference = self._infer_ids(phoneme_ids, syn)
-        return postprocess_audio(
-            inference.audio,
-            normalize=syn.normalize_audio,
-            volume=syn.volume,
-        )
+        return self.postprocess_inference(inference.audio, syn)
 
     def synthesize(
         self,
@@ -378,6 +438,18 @@ class PiperVoice:
                 continue
             audio = self.synthesize_ids(sentence.ids, syn_config)
             metadata: dict[str, Any] = {}
+            application = self.last_voice_level_application
+            if application is not None:
+                metadata.update(
+                    {
+                        "voice_leveling_mode": syn_config.loudness.voice_leveling
+                        if syn_config
+                        else "off",
+                        "voice_calibration_key": str(application.key) if application.key else None,
+                        "voice_calibration_gain_db": application.gain_db,
+                        "voice_calibration_source": application.source,
+                    }
+                )
             if result.diagnostics is not None:
                 metadata["frontend_diagnostics"] = result.diagnostics
             yield AudioChunk(

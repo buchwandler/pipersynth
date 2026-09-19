@@ -20,6 +20,30 @@ def _as_float32_1d(audio: np.ndarray, *, name: str = "audio") -> np.ndarray:
     return result
 
 
+def prepare_audio(audio: np.ndarray, *, normalize: bool) -> np.ndarray:
+    """Validate inference audio and apply the legacy peak normalization step."""
+    result = _as_float32_1d(audio)
+    if normalize and result.size:
+        peak = float(np.max(np.abs(result)))
+        if peak >= AUDIO_PEAK_EPSILON:
+            result = result / peak
+        else:
+            result = np.zeros_like(result)
+    return result
+
+
+def finish_audio(audio: np.ndarray, *, volume: float) -> np.ndarray:
+    """Apply user volume and perform the single final safety clamp."""
+    result = _as_float32_1d(audio)
+    if isinstance(volume, bool) or not isinstance(volume, (int, float)) or not np.isfinite(volume):
+        raise ModelInferenceError("volume must be a finite number")
+    if volume != 1.0:
+        result = result * np.float32(volume)
+    if not np.all(np.isfinite(result)):
+        raise ModelInferenceError("postprocessed audio contains non-finite samples")
+    return np.clip(result, -1.0, 1.0).astype(np.float32, copy=False)
+
+
 def postprocess_audio(
     audio: np.ndarray,
     *,
@@ -28,18 +52,7 @@ def postprocess_audio(
 ) -> np.ndarray:
     """Normalize, scale, validate, and clip a waveform without mutating it."""
 
-    result = _as_float32_1d(audio)
-    if normalize and result.size:
-        peak = float(np.max(np.abs(result)))
-        if peak >= AUDIO_PEAK_EPSILON:
-            result = result / peak
-        else:
-            result = np.zeros_like(result)
-    if volume != 1.0:
-        result = result * np.float32(volume)
-    if not np.all(np.isfinite(result)):
-        raise ModelInferenceError("postprocessed audio contains non-finite samples")
-    return np.clip(result, -1.0, 1.0).astype(np.float32, copy=False)
+    return finish_audio(prepare_audio(audio, normalize=normalize), volume=volume)
 
 
 def float_to_int16(audio: np.ndarray) -> np.ndarray:

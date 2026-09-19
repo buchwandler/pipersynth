@@ -12,6 +12,7 @@ from ._warnings import warn_external
 from .audio import audio_to_int16_bytes, float_to_int16, write_wav
 from .diagnostics import RuntimeDiagnostics, TimingDiagnostics
 from .errors import InvalidSynthesisConfigError, ModelInferenceError, OptionalDependencyError
+from .loudness_config import LoudnessConfig
 
 
 def _finite(value: float, name: str, *, minimum: float) -> None:
@@ -33,7 +34,11 @@ class SynthesisConfig:
     volume: float = 1.0
     noise_w: float | None = None
 
+    loudness: LoudnessConfig = field(default_factory=LoudnessConfig)
+
     def __post_init__(self) -> None:
+        if not isinstance(self.loudness, LoudnessConfig):
+            raise InvalidSynthesisConfigError("loudness must be a LoudnessConfig")
         if self.speaker_id is not None and (
             isinstance(self.speaker_id, bool) or not isinstance(self.speaker_id, int)
         ):
