@@ -114,7 +114,9 @@ def build_catalog(voices: Sequence[VoiceMetadata]) -> ShowcaseCatalog:
             )
         )
         for speaker_id in range(max(1, metadata.num_speakers)):
-            key = VoiceCalibrationKey("piper", metadata.id, metadata.quality, f"speaker-{speaker_id}")
+            key = VoiceCalibrationKey(
+                "piper", metadata.id, metadata.quality, f"speaker-{speaker_id}"
+            )
             identity_rows.append(
                 VoiceIdentityEntry(
                     number=len(identity_rows) + 1,
@@ -176,7 +178,9 @@ def with_language_coverage(
     catalog: ShowcaseCatalog,
     probe: Callable[[str], SpokenformProbe] = probe_spokenform_locale,
 ) -> ShowcaseCatalog:
-    return ShowcaseCatalog(catalog.voices, catalog.identities, build_language_coverage(catalog, probe))
+    return ShowcaseCatalog(
+        catalog.voices, catalog.identities, build_language_coverage(catalog, probe)
+    )
 
 
 def _voice_dict(item: VoiceCatalogEntry) -> dict[str, object]:
@@ -223,9 +227,7 @@ def language_payload(catalog: ShowcaseCatalog) -> dict[str, object]:
 
 def missing_language_payload(catalog: ShowcaseCatalog) -> dict[str, object]:
     missing = [
-        _language_dict(item)
-        for item in catalog.languages
-        if item.spokenform_status != "supported"
+        _language_dict(item) for item in catalog.languages if item.spokenform_status != "supported"
     ]
     return {
         "schema": 1,
@@ -253,13 +255,16 @@ def write_inventory_outputs(catalog: ShowcaseCatalog, output_dir: Path) -> dict[
         encoding="utf-8",
     )
     outputs["missing"].write_text(
-        json.dumps(missing_language_payload(catalog), indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        json.dumps(missing_language_payload(catalog), indent=2, sort_keys=True, ensure_ascii=False)
+        + "\n",
         encoding="utf-8",
     )
     missing_locales = sorted(
         item.locale for item in catalog.languages if item.spokenform_status != "supported"
     )
-    outputs["missing_text"].write_text("\n".join(missing_locales) + ("\n" if missing_locales else ""), encoding="utf-8")
+    outputs["missing_text"].write_text(
+        "\n".join(missing_locales) + ("\n" if missing_locales else ""), encoding="utf-8"
+    )
     return outputs
 
 
@@ -283,7 +288,10 @@ def format_voice_table(voices: Sequence[VoiceCatalogEntry]) -> str:
 
 
 def format_identity_table(identities: Sequence[VoiceIdentityEntry]) -> str:
-    lines = ["No.  Calibration identity                                      Name", "---  ---------------------------------------------------------  ----"]
+    lines = [
+        "No.  Calibration identity                                      Name",
+        "---  ---------------------------------------------------------  ----",
+    ]
     lines.extend(
         f"{item.number:>3}  {item.calibration_key:<57}  {item.speaker_name or ''}"
         for item in identities

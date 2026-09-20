@@ -76,9 +76,13 @@ def test_preflight_resolves_each_distinct_locale_once(monkeypatch: pytest.Monkey
     ]
     calls: list[str] = []
     stimulus = benchmark.LoudnessStimulus("locale", "en", "source", "one", "test", False)
-    def resolve(locale: str, _fallbacks: Mapping[str, Mapping[str, object]]) -> benchmark.LoudnessStimulus:
+
+    def resolve(
+        locale: str, _fallbacks: Mapping[str, Mapping[str, object]]
+    ) -> benchmark.LoudnessStimulus:
         calls.append(locale)
         return benchmark.LoudnessStimulus(locale, "language", "source", "one", "test", False)
+
     monkeypatch.setattr(benchmark, "resolve_count_stimulus", resolve)
     preflight = benchmark.preflight_stimuli(entries, {})
     assert calls == ["de_DE", "en_US"]
@@ -86,12 +90,18 @@ def test_preflight_resolves_each_distinct_locale_once(monkeypatch: pytest.Monkey
     assert stimulus.locale == "locale"
 
 
-def test_preflight_collects_all_unsupported_locales_without_raising(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_preflight_collects_all_unsupported_locales_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     entries = [{"locale": "bg_BG"}, {"locale": "en_US"}, {"locale": "de_DE"}]
-    def resolve(locale: str, _fallbacks: Mapping[str, Mapping[str, object]]) -> benchmark.LoudnessStimulus:
+
+    def resolve(
+        locale: str, _fallbacks: Mapping[str, Mapping[str, object]]
+    ) -> benchmark.LoudnessStimulus:
         if locale == "bg_BG":
             raise benchmark.StimulusResolutionError("missing bg_BG")
         return benchmark.LoudnessStimulus(locale, "language", "source", "one", "test", False)
+
     monkeypatch.setattr(benchmark, "resolve_count_stimulus", resolve)
     preflight = benchmark.preflight_stimuli(entries, {})
     assert list(preflight.unsupported) == ["bg_BG"]
@@ -104,7 +114,10 @@ def test_measure_repeats_requires_pre_resolved_stimulus() -> None:
 
 
 def test_unsupported_locale_blocks_every_matching_identity() -> None:
-    entries = [{"locale": "bg_BG", "calibration_key": "one"}, {"locale": "bg_BG", "calibration_key": "two"}]
+    entries = [
+        {"locale": "bg_BG", "calibration_key": "one"},
+        {"locale": "bg_BG", "calibration_key": "two"},
+    ]
     failures = benchmark.stimulus_failures_for_entries(entries, {"bg_BG": "unsupported"})
     assert [item["calibration_key"] for item in failures] == ["one", "two"]
     assert all(item["status"] == "unsupported_stimulus" for item in failures)

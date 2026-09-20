@@ -81,7 +81,10 @@ def test_calibration_keys_match_piper_voice_identity_format() -> None:
 def test_language_summary_counts_catalog_voices_and_speaker_identities() -> None:
     catalog = example.with_language_coverage(example.build_catalog(_voices()), _probe)
 
-    assert [(item.locale, item.catalog_voice_count, item.speaker_identity_count) for item in catalog.languages] == [
+    assert [
+        (item.locale, item.catalog_voice_count, item.speaker_identity_count)
+        for item in catalog.languages
+    ] == [
         ("bg_BG", 1, 1),
         ("en_US", 1, 2),
     ]
@@ -114,7 +117,9 @@ def test_missing_spokenform_does_not_break_inventory(monkeypatch: pytest.MonkeyP
     assert all(item.spokenform_status == "unavailable" for item in catalog.languages)
 
 
-def test_inventory_outputs_contain_all_catalog_voices_and_sorted_missing_text(tmp_path: Path) -> None:
+def test_inventory_outputs_contain_all_catalog_voices_and_sorted_missing_text(
+    tmp_path: Path,
+) -> None:
     catalog = example.with_language_coverage(example.build_catalog(_voices()), _probe)
 
     outputs = example.write_inventory_outputs(catalog, tmp_path)
@@ -146,7 +151,13 @@ def test_list_only_prints_languages_before_voice_table_and_never_constructs_pipe
 
     monkeypatch.setattr(example, "VoiceAssetManager", FakeManager)
     monkeypatch.setattr(example, "PiperPipeline", SentinelPipeline)
-    monkeypatch.setattr(example, "with_language_coverage", lambda catalog: example.ShowcaseCatalog(catalog.voices, catalog.identities, example.build_language_coverage(catalog, _probe)))
+    monkeypatch.setattr(
+        example,
+        "with_language_coverage",
+        lambda catalog: example.ShowcaseCatalog(
+            catalog.voices, catalog.identities, example.build_language_coverage(catalog, _probe)
+        ),
+    )
     monkeypatch.setattr(example, "artefact_dir", lambda: tmp_path)
 
     assert example.main(["--list-only"]) == 0
@@ -169,8 +180,16 @@ def test_normal_mode_stops_before_download_when_languages_are_missing(
             return type("Cache", (), {"directory": Path("/cache")})()
 
     monkeypatch.setattr(example, "VoiceAssetManager", FakeManager)
-    monkeypatch.setattr(example, "PiperPipeline", lambda *_args, **_kwargs: pytest.fail("download started"))
-    monkeypatch.setattr(example, "with_language_coverage", lambda catalog: example.ShowcaseCatalog(catalog.voices, catalog.identities, example.build_language_coverage(catalog, _probe)))
+    monkeypatch.setattr(
+        example, "PiperPipeline", lambda *_args, **_kwargs: pytest.fail("download started")
+    )
+    monkeypatch.setattr(
+        example,
+        "with_language_coverage",
+        lambda catalog: example.ShowcaseCatalog(
+            catalog.voices, catalog.identities, example.build_language_coverage(catalog, _probe)
+        ),
+    )
     monkeypatch.setattr(example, "artefact_dir", lambda: tmp_path)
 
     assert example.main([]) == 2

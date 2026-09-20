@@ -25,7 +25,9 @@ RunCommand = Callable[..., subprocess.CompletedProcess[str]]
 _RESOURCE_HEAVY_EXAMPLES = {"all_voices.py"}
 
 
-def _example_paths(*, include_optional: bool = False, include_resource_heavy: bool = False) -> list[Path]:
+def _example_paths(
+    *, include_optional: bool = False, include_resource_heavy: bool = False
+) -> list[Path]:
     paths = []
     for path in sorted(PROJECT_ROOT.joinpath("examples").glob("*.py")):
         if path.name in _EXCLUDED_FILES:

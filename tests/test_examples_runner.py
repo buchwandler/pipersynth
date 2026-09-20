@@ -77,8 +77,9 @@ def test_example_paths_exclude_helpers_and_optional_by_default(
     ]
 
 
-
-def test_resource_heavy_examples_require_explicit_selection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resource_heavy_examples_require_explicit_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _example_tree(tmp_path, "basic.py", "all_voices.py", "german.py")
     monkeypatch.setattr(runner_module, "PROJECT_ROOT", tmp_path)
     assert [path.name for path in runner_module._example_paths()] == ["basic.py"]
@@ -88,10 +89,9 @@ def test_resource_heavy_examples_require_explicit_selection(tmp_path: Path, monk
     ]
     assert [
         path.name
-        for path in runner_module._example_paths(
-            include_optional=True, include_resource_heavy=True
-        )
+        for path in runner_module._example_paths(include_optional=True, include_resource_heavy=True)
     ] == ["all_voices.py", "basic.py", "german.py"]
+
 
 def test_run_examples_injects_output_directory_and_validates_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

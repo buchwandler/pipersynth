@@ -47,6 +47,7 @@ class StimulusPreflight:
     stimuli: Mapping[str, LoudnessStimulus]
     unsupported: Mapping[str, str]
 
+
 @dataclass(frozen=True, slots=True)
 class BenchmarkPolicy:
     schema: int
@@ -187,6 +188,7 @@ def stimulus_failures_for_entries(
         for entry in entries
         if str(entry["locale"]) in unsupported
     ]
+
 
 def expand_speaker_ids(metadata: VoiceMetadata) -> tuple[int, ...]:
     return tuple(range(max(1, metadata.num_speakers)))
@@ -412,6 +414,7 @@ def coverage_report(
         "complete": expected == measured and not failed_expected,
     }
 
+
 def language_preflight_payload(preflight: StimulusPreflight | None) -> dict[str, Any]:
     if preflight is None:
         return {"locales": {}, "supported_count": 0, "unsupported_count": 0}
@@ -513,6 +516,7 @@ _aggregate = aggregate_measurements
 _calibration_candidate = calibration_candidate
 _coverage = coverage_report
 
+
 def print_stimulus_preflight(preflight: StimulusPreflight) -> None:
     print("Language/stimulus preflight")
     print("---------------------------")
@@ -570,9 +574,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Use --allow-failures to measure the supported subset."
         )
         return 2
-    measurable_entries = [
-        entry for entry in entries if str(entry["locale"]) in preflight.stimuli
-    ]
+    measurable_entries = [entry for entry in entries if str(entry["locale"]) in preflight.stimuli]
     measurements: list[dict[str, Any]] = []
     for index, entry in enumerate(measurable_entries, 1):
         print(f"[{index}/{len(measurable_entries)}] {entry['calibration_key']}")
@@ -586,9 +588,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         measurements.extend(measured)
         failures.extend(failed)
-    report = build_report(
-        entries, measurements, failures, policy, language_preflight=preflight
-    )
+    report = build_report(entries, measurements, failures, policy, language_preflight=preflight)
     complete = write_outputs(report, args.output, candidate_path=args.write_calibration_candidate)
     if args.write_calibration_candidate and not complete:
         print("Incomplete catalog coverage; production candidate suppressed.")

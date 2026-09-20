@@ -32,7 +32,6 @@ PIPERSYNTH_OFFLINE=1 python examples/run_all.py
 PIPERSYNTH_EXAMPLE_VOICE=en_US-lessac-high python examples/basic.py
 ```
 
-
 ## All Piper voices and languages
 
 Print the current Piper catalog without downloading voice models:
@@ -51,7 +50,6 @@ python examples/all_voices.py
 ```
 
 Use `--skip-unsupported` only for a clearly marked partial showcase. The all-voices output groups WAV files by each model's native sample rate rather than silently resampling them.
-
 
 ## Loudness benchmark preflight
 
