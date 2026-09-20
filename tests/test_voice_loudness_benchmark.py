@@ -1,5 +1,9 @@
+import inspect
+from collections.abc import Mapping
+
 import pytest
 
+import benchmarks.voice_loudness as benchmark
 from benchmarks.voice_loudness import (
     aggregate_measurements,
     calibration_candidate,
@@ -62,3 +66,53 @@ def test_positive_boost_is_headroom_limited_and_fallback_rejects_digits():
         fallbacks={"xx": {"text": "one, two, three, four, five, six, seven, eight, nine, ten."}},
     )
     assert stimulus.fallback_used
+
+
+def test_preflight_resolves_each_distinct_locale_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    entries = [
+        {"locale": "de_DE", "calibration_key": "de"},
+        {"locale": "en_US", "calibration_key": "en"},
+        {"locale": "en_US", "calibration_key": "en-2"},
+    ]
+    calls: list[str] = []
+    stimulus = benchmark.LoudnessStimulus("locale", "en", "source", "one", "test", False)
+    def resolve(locale: str, _fallbacks: Mapping[str, Mapping[str, object]]) -> benchmark.LoudnessStimulus:
+        calls.append(locale)
+        return benchmark.LoudnessStimulus(locale, "language", "source", "one", "test", False)
+    monkeypatch.setattr(benchmark, "resolve_count_stimulus", resolve)
+    preflight = benchmark.preflight_stimuli(entries, {})
+    assert calls == ["de_DE", "en_US"]
+    assert set(preflight.stimuli) == {"de_DE", "en_US"}
+    assert stimulus.locale == "locale"
+
+
+def test_preflight_collects_all_unsupported_locales_without_raising(monkeypatch: pytest.MonkeyPatch) -> None:
+    entries = [{"locale": "bg_BG"}, {"locale": "en_US"}, {"locale": "de_DE"}]
+    def resolve(locale: str, _fallbacks: Mapping[str, Mapping[str, object]]) -> benchmark.LoudnessStimulus:
+        if locale == "bg_BG":
+            raise benchmark.StimulusResolutionError("missing bg_BG")
+        return benchmark.LoudnessStimulus(locale, "language", "source", "one", "test", False)
+    monkeypatch.setattr(benchmark, "resolve_count_stimulus", resolve)
+    preflight = benchmark.preflight_stimuli(entries, {})
+    assert list(preflight.unsupported) == ["bg_BG"]
+    assert set(preflight.stimuli) == {"de_DE", "en_US"}
+
+
+def test_measure_repeats_requires_pre_resolved_stimulus() -> None:
+    parameter = inspect.signature(benchmark.measure_repeats).parameters["stimulus"]
+    assert parameter.default is inspect.Parameter.empty
+
+
+def test_unsupported_locale_blocks_every_matching_identity() -> None:
+    entries = [{"locale": "bg_BG", "calibration_key": "one"}, {"locale": "bg_BG", "calibration_key": "two"}]
+    failures = benchmark.stimulus_failures_for_entries(entries, {"bg_BG": "unsupported"})
+    assert [item["calibration_key"] for item in failures] == ["one", "two"]
+    assert all(item["status"] == "unsupported_stimulus" for item in failures)
+
+
+def test_coverage_does_not_double_count_explicit_failures() -> None:
+    entries = [{"calibration_key": "one"}, {"calibration_key": "two"}]
+    aggregates = [{"calibration_key": "one", "repeat_count": 3}]
+    report = benchmark.coverage_report(entries, aggregates, [{"calibration_key": "two"}], repeats=3)
+    assert report["catalog_identities_failed"] == 1
+    assert report["complete"] is False

@@ -43,6 +43,11 @@ class LoudnessStimulus:
 
 
 @dataclass(frozen=True, slots=True)
+class StimulusPreflight:
+    stimuli: Mapping[str, LoudnessStimulus]
+    unsupported: Mapping[str, str]
+
+@dataclass(frozen=True, slots=True)
 class BenchmarkPolicy:
     schema: int
     name: str
@@ -152,6 +157,37 @@ def resolve_count_stimulus(
         )
 
 
+def preflight_stimuli(
+    entries: Sequence[Mapping[str, Any]],
+    fallbacks: dict[str, dict[str, Any]] | None = None,
+) -> StimulusPreflight:
+    """Resolve every distinct locale before any synthesis starts."""
+    fallbacks = load_fallbacks() if fallbacks is None else fallbacks
+    stimuli: dict[str, LoudnessStimulus] = {}
+    unsupported: dict[str, str] = {}
+    for locale in sorted({str(entry["locale"]) for entry in entries}):
+        try:
+            stimuli[locale] = resolve_count_stimulus(locale, fallbacks)
+        except StimulusResolutionError as error:
+            unsupported[locale] = str(error)
+    return StimulusPreflight(stimuli=stimuli, unsupported=unsupported)
+
+
+def stimulus_failures_for_entries(
+    entries: Sequence[Mapping[str, Any]],
+    unsupported: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    """Represent every identity whose locale failed stimulus preflight."""
+    return [
+        {
+            **dict(entry),
+            "status": "unsupported_stimulus",
+            "error": unsupported[str(entry["locale"])],
+        }
+        for entry in entries
+        if str(entry["locale"]) in unsupported
+    ]
+
 def expand_speaker_ids(metadata: VoiceMetadata) -> tuple[int, ...]:
     return tuple(range(max(1, metadata.num_speakers)))
 
@@ -218,11 +254,10 @@ def measure_repeats(
     offline: bool = False,
     repeats: int = 3,
     refresh_catalog: bool = False,
-    stimulus: LoudnessStimulus | None = None,
+    stimulus: LoudnessStimulus,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Measure one catalog voice/speaker repeatedly with leveling disabled."""
 
-    stimulus = stimulus or resolve_count_stimulus(str(entry["locale"]))
     measurements: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     pipeline: PiperPipeline | None = None
@@ -369,11 +404,31 @@ def coverage_report(
         if item.get("status") in {"non_finite_loudness", "insufficient_repeats"}
     )
     failed_expected = failed & expected
+    failed_or_missing = (expected - measured) | failed_expected
     return {
         "catalog_identities_expected": len(expected),
         "catalog_identities_measured": len(measured),
-        "catalog_identities_failed": len(expected - measured) + len(failed_expected),
+        "catalog_identities_failed": len(failed_or_missing),
         "complete": expected == measured and not failed_expected,
+    }
+
+def language_preflight_payload(preflight: StimulusPreflight | None) -> dict[str, Any]:
+    if preflight is None:
+        return {"locales": {}, "supported_count": 0, "unsupported_count": 0}
+    locales: dict[str, dict[str, Any]] = {}
+    for locale, stimulus in sorted(preflight.stimuli.items()):
+        locales[locale] = {
+            "status": "supported",
+            "generator": stimulus.generator,
+            "spoken_text": stimulus.spoken_text,
+            "normalized_language": stimulus.normalized_language,
+        }
+    for locale, error in sorted(preflight.unsupported.items()):
+        locales[locale] = {"status": "unsupported", "error": error}
+    return {
+        "locales": locales,
+        "supported_count": len(preflight.stimuli),
+        "unsupported_count": len(preflight.unsupported),
     }
 
 
@@ -382,6 +437,7 @@ def build_report(
     measurements: Sequence[Mapping[str, Any]],
     failures: Sequence[Mapping[str, Any]],
     policy: BenchmarkPolicy,
+    language_preflight: StimulusPreflight | None = None,
 ) -> dict[str, Any]:
     aggregates = aggregate_measurements(
         measurements, repeats=policy.repeats, max_mad_lu=policy.max_mad_lu
@@ -405,6 +461,7 @@ def build_report(
         "measurements": list(measurements),
         "aggregates": candidates,
         "failures": list(failures),
+        "language_preflight": language_preflight_payload(language_preflight),
         "coverage": coverage_report(entries, aggregates, failures, repeats=policy.repeats),
     }
 
@@ -432,7 +489,11 @@ def write_outputs(
         f"- Expected identities: {coverage['catalog_identities_expected']}\n"
         f"- Measured identities: {coverage['catalog_identities_measured']}\n"
         f"- Failed identities: {coverage['catalog_identities_failed']}\n"
-        f"- Complete coverage: {coverage['complete']}\n",
+        f"- Complete coverage: {coverage['complete']}\n"
+        f"- Distinct locales: {report['language_preflight']['supported_count'] + report['language_preflight']['unsupported_count']}\n"
+        f"- Supported stimulus locales: {report['language_preflight']['supported_count']}\n"
+        f"- Unsupported stimulus locales: {report['language_preflight']['unsupported_count']}\n"
+        f"- Unsupported: {', '.join(sorted(report['language_preflight']['locales'])) if report['language_preflight']['unsupported_count'] else 'none'}\n",
         encoding="utf-8",
     )
     if candidate_path is not None:
@@ -451,6 +512,16 @@ _entries = inventory_entries
 _aggregate = aggregate_measurements
 _calibration_candidate = calibration_candidate
 _coverage = coverage_report
+
+def print_stimulus_preflight(preflight: StimulusPreflight) -> None:
+    print("Language/stimulus preflight")
+    print("---------------------------")
+    for locale in sorted(set(preflight.stimuli) | set(preflight.unsupported)):
+        stimulus = preflight.stimuli.get(locale)
+        if stimulus is None:
+            print(f"{locale}  unsupported  {preflight.unsupported[locale]}")
+        else:
+            print(f"{locale}  {stimulus.generator}  {stimulus.spoken_text}")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -486,27 +557,38 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(f"Catalog cache: {manager.cache_info().directory}")
     print(f"Catalog voices: {len(voices)}; expanded identities: {len(entries)}")
+    preflight = preflight_stimuli(entries)
+    print_stimulus_preflight(preflight)
     if args.list_stimuli:
-        for locale in sorted({str(entry["locale"]) for entry in entries}):
-            try:
-                print(json.dumps(asdict(resolve_count_stimulus(locale)), ensure_ascii=False))
-            except StimulusResolutionError as error:
-                print(f"{locale}: unsupported_stimulus ({error})")
         return 0
+    failures = stimulus_failures_for_entries(entries, preflight.unsupported)
+    if preflight.unsupported and not args.allow_failures:
+        report = build_report(entries, [], failures, policy, language_preflight=preflight)
+        write_outputs(report, args.output, candidate_path=args.write_calibration_candidate)
+        print(
+            f"Unsupported stimulus locales: {', '.join(sorted(preflight.unsupported))}. "
+            "Use --allow-failures to measure the supported subset."
+        )
+        return 2
+    measurable_entries = [
+        entry for entry in entries if str(entry["locale"]) in preflight.stimuli
+    ]
     measurements: list[dict[str, Any]] = []
-    failures: list[dict[str, Any]] = []
-    for index, entry in enumerate(entries, 1):
-        print(f"[{index}/{len(entries)}] {entry['calibration_key']}")
+    for index, entry in enumerate(measurable_entries, 1):
+        print(f"[{index}/{len(measurable_entries)}] {entry['calibration_key']}")
         measured, failed = measure_repeats(
             entry,
             cache_dir=args.cache_dir,
             offline=args.offline,
             repeats=policy.repeats,
             refresh_catalog=False,
+            stimulus=preflight.stimuli[str(entry["locale"])],
         )
         measurements.extend(measured)
         failures.extend(failed)
-    report = build_report(entries, measurements, failures, policy)
+    report = build_report(
+        entries, measurements, failures, policy, language_preflight=preflight
+    )
     complete = write_outputs(report, args.output, candidate_path=args.write_calibration_candidate)
     if args.write_calibration_candidate and not complete:
         print("Incomplete catalog coverage; production candidate suppressed.")

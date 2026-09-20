@@ -22,14 +22,17 @@ _OUTPUT_ENV = "PIPERSYNTH_EXAMPLE_OUTPUT_DIR"
 _EXCLUDED_FILES = {"__init__.py", "_output.py", "run_all.py"}
 _OPTIONAL_EXAMPLES = {"german.py", "homographs.py"}
 RunCommand = Callable[..., subprocess.CompletedProcess[str]]
+_RESOURCE_HEAVY_EXAMPLES = {"all_voices.py"}
 
 
-def _example_paths(*, include_optional: bool = False) -> list[Path]:
+def _example_paths(*, include_optional: bool = False, include_resource_heavy: bool = False) -> list[Path]:
     paths = []
     for path in sorted(PROJECT_ROOT.joinpath("examples").glob("*.py")):
         if path.name in _EXCLUDED_FILES:
             continue
         if not include_optional and path.name in _OPTIONAL_EXAMPLES:
+            continue
+        if not include_resource_heavy and path.name in _RESOURCE_HEAVY_EXAMPLES:
             continue
         paths.append(path)
     return paths
@@ -142,6 +145,11 @@ def parse_args() -> argparse.Namespace:
         help="include slower or additional-model examples",
     )
     parser.add_argument(
+        "--include-resource-heavy",
+        action="store_true",
+        help="include examples that may download or synthesize the full catalog",
+    )
+    parser.add_argument(
         "--fail-fast",
         action="store_true",
         help="stop after the first failed example",
@@ -152,7 +160,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     paths = _example_paths(include_optional=args.include_optional)
-
+    paths = _example_paths(
+        include_optional=args.include_optional,
+        include_resource_heavy=args.include_resource_heavy,
+    )
     if args.list:
         for path in paths:
             print(_label(path))
