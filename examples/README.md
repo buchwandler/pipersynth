@@ -53,7 +53,7 @@ Use `--skip-unsupported` only for a clearly marked partial showcase. The all-voi
 
 ## Loudness benchmark preflight
 
-The loudness benchmark resolves every distinct Piper locale and count stimulus before creating the first synthesis pipeline. Unsupported locales are reported together and represented as identity-level failures. Use `python benchmarks/voice_loudness.py --list-stimuli` to inspect this preflight without inference.
+The loudness benchmark resolves every distinct Piper locale and count stimulus during a parent-process preflight before synthesis. Each renderable Piper model then runs in one fresh Python process, where one pipeline measures all speakers and repeats for that model. This prevents process-global PiperG2P and eSpeak state from leaking between models. Stimulus support and renderer support are reported separately, so Spokenform support does not imply PiperG2P support. Use `python benchmarks/voice_loudness.py --list-stimuli` to inspect the stimulus preflight without inference.
 
 Direct phoneme mode is intentionally excluded from this suite because
 `is_phonemes=True` bypasses UtterPlan. The library convenience APIs remain supported;
