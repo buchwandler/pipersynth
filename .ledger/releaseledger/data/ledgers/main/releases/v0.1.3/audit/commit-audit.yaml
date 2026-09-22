@@ -1,0 +1,236 @@
+schema_version: 1
+object_type: commit_audit_sheet
+versioning:
+  schema_version: 1
+  revision: 3
+release_version: v0.1.3
+git_base_ref: v0.1.2
+git_base_sha: f505c023b8c335aaf17dd0623682e558348b9c8f
+git_head_ref: HEAD
+git_head_sha: 6e1d76d55301e228bb9951a32c56e5c02e989525
+git_range: f505c023b8c335aaf17dd0623682e558348b9c8f..6e1d76d55301e228bb9951a32c56e5c02e989525
+commit_count: 6
+rows:
+  - sha: e4f1c6860f03ffec363d09ac2d03c0eeaad4aad4
+    source_ref: git:e4f1c6860f03ffec363d09ac2d03c0eeaad4aad4
+    short_sha: e4f1c68
+    changed_paths:
+      - .gitignore
+      - README.md
+      - benchmarks/data/voice_loudness_count_fallbacks.json
+      - benchmarks/data/voice_loudness_policy.json
+      - benchmarks/voice_loudness.py
+      - benchmarks/voice_loudness_calibration.py
+      - docs/architecture.md
+      - pipersynth/__init__.py
+      - pipersynth/audio.py
+      - pipersynth/audio_job.py
+      - pipersynth/config.py
+      - pipersynth/data/voice_level_calibration.json
+      - pipersynth/loudness_config.py
+      - pipersynth/pipeline.py
+      - pipersynth/plan_adapter.py
+      - pipersynth/types.py
+      - pipersynth/voice.py
+      - pipersynth/voice_level.py
+      - pyproject.toml
+      - tests/test_voice_leveling.py
+      - tests/test_voice_loudness_benchmark.py
+      - tests/test_voice_loudness_calibration.py
+    stats:
+      files_changed: 22
+      insertions: 1609
+      deletions: 35
+    inspected: true
+    inspected_paths:
+      - README.md
+      - docs/architecture.md
+      - pipersynth/__init__.py
+      - pipersynth/audio.py
+      - pipersynth/audio_job.py
+      - pipersynth/config.py
+      - pipersynth/loudness_config.py
+      - pipersynth/pipeline.py
+      - pipersynth/plan_adapter.py
+      - pipersynth/types.py
+      - pipersynth/voice.py
+      - pipersynth/voice_level.py
+    observed_behavior:
+      Introduces a LoudnessConfig policy validated on pipeline and
+      synthesis configuration, a strictly validated offline calibration catalog keyed
+      by exact piper model, quality, and speaker identities, static gain application
+      between legacy peak normalization and user volume with a single final clamp, calibration
+      diagnostics in inference and result metadata, target_lufs rejection for streaming
+      unit preparation, and managed-bundle voice loading that preserves catalog identity.
+    public_impact: public
+    decision: accepted
+    stale: false
+    evidence_subject: "feat: add supporr for loudness calibration"
+    target_entry_id: entry-0001
+    notes: "Public feature: calibrated voice leveling and the LoudnessConfig API surface."
+  - sha: fd848fa659ea63768051c01313e3d82e79ec0d1b
+    source_ref: git:fd848fa659ea63768051c01313e3d82e79ec0d1b
+    short_sha: fd848fa
+    changed_paths:
+      - benchmarks/voice_loudness.py
+      - examples/README.md
+      - examples/all_voices.py
+      - examples/run_all.py
+      - tests/test_all_voices_example.py
+      - tests/test_examples_runner.py
+      - tests/test_voice_loudness_benchmark.py
+    stats:
+      files_changed: 7
+      insertions: 874
+      deletions: 15
+    inspected: true
+    inspected_paths:
+      - benchmarks/voice_loudness.py
+      - examples/README.md
+      - examples/all_voices.py
+      - examples/run_all.py
+    observed_behavior:
+      Adds an all-voices inventory example that lists catalog voices,
+      per-speaker calibration identities, and Spokenform language gaps below example-artefacts,
+      gates the full showcase behind an explicit resource-heavy runner flag, and preflights
+      every distinct locale count stimulus before any benchmark synthesis so unsupported
+      locales are reported together as identity-level failures.
+    public_impact: docs
+    decision: accepted
+    stale: false
+    evidence_subject: "feat: improved loudness benchmark"
+    target_entry_id: entry-0006
+    notes:
+      User-facing example and documentation; benchmark preflight is supporting
+      tooling.
+  - sha: 99bb8364904dc20e34f2c90f53d09c54c1d99312
+    source_ref: git:99bb8364904dc20e34f2c90f53d09c54c1d99312
+    short_sha: 99bb836
+    changed_paths:
+      - benchmarks/voice_loudness.py
+      - examples/README.md
+      - examples/all_voices.py
+      - examples/run_all.py
+      - tests/test_all_voices_example.py
+      - tests/test_examples_runner.py
+      - tests/test_voice_loudness_benchmark.py
+    stats:
+      files_changed: 7
+      insertions: 71
+      deletions: 31
+    inspected: true
+    inspected_paths:
+      - benchmarks/voice_loudness.py
+      - examples/README.md
+      - examples/all_voices.py
+      - examples/run_all.py
+      - tests/test_all_voices_example.py
+      - tests/test_examples_runner.py
+      - tests/test_voice_loudness_benchmark.py
+    observed_behavior:
+      Formatting and lint cleanup in benchmark, example, and test sources
+      plus small example test adjustments; no user-visible behavior change.
+    public_impact: internal
+    decision: internal
+    stale: false
+    evidence_subject: "chore: pre-commit"
+    target_entry_id: entry-0009
+    notes:
+      Accounted for by an internal entry with explicit rationale; excluded from
+      the public changelog.
+  - sha: b87a4e9bfde6d6c7c2d4f2d9c29a54cd9ff9e9a6
+    source_ref: git:b87a4e9bfde6d6c7c2d4f2d9c29a54cd9ff9e9a6
+    short_sha: b87a4e9
+    changed_paths:
+      - benchmarks/voice_loudness.py
+      - examples/README.md
+      - tests/test_voice_loudness_benchmark.py
+    stats:
+      files_changed: 3
+      insertions: 569
+      deletions: 66
+    inspected: true
+    inspected_paths:
+      - benchmarks/voice_loudness.py
+      - examples/README.md
+      - tests/test_voice_loudness_benchmark.py
+    observed_behavior:
+      Reworks loudness benchmark measurement to open one pipeline per
+      model and reuse it across all speaker identities, run each model in an isolated
+      worker process with atomic JSON results, tag failures with phase and error_type
+      fields, reject non-finite metrics, and resolve stimuli with the normalized spokenform
+      language recorded.
+    public_impact: internal
+    decision: accepted
+    stale: false
+    evidence_subject: "feat: improved benchmark"
+    target_entry_id: entry-0005
+    notes: Developer-facing benchmark tooling documented in the repository.
+  - sha: 0208866f807084e80142feb3bd6caba9f2eb1af3
+    source_ref: git:0208866f807084e80142feb3bd6caba9f2eb1af3
+    short_sha: 0208866
+    changed_paths:
+      - benchmarks/voice_loudness_calibration.py
+      - docs/performance.md
+      - pipersynth/data/voice_level_calibration.json
+      - tests/test_packaged_voice_calibration_data.py
+      - tests/test_voice_loudness_calibration.py
+    stats:
+      files_changed: 5
+      insertions: 24576
+      deletions: 20
+    inspected: true
+    inspected_paths:
+      - benchmarks/voice_loudness_calibration.py
+      - docs/performance.md
+      - pipersynth/data/voice_level_calibration.json
+      - tests/test_packaged_voice_calibration_data.py
+      - tests/test_voice_loudness_calibration.py
+    observed_behavior:
+      Ships the packaged runtime calibration catalog with measured
+      BS.1770 records for catalog speaker identities at a -24 LUFS reference and -1
+      dBTP calibration ceiling, adds packaged-data integrity tests, makes promotion
+      validate coverage count consistency with reviewed-status promotion and an explicit
+      partial-promotion opt-in, and documents remeasurement duties for Vietnamese and
+      Chinese identities after PiperG2P phoneme coverage changes.
+    public_impact: public
+    decision: accepted
+    stale: false
+    evidence_subject: "feat: add voice loudness calibration"
+    target_entry_id: entry-0003
+    notes: Data and documentation backing the calibrated voice leveling feature.
+  - sha: 6e1d76d55301e228bb9951a32c56e5c02e989525
+    source_ref: git:6e1d76d55301e228bb9951a32c56e5c02e989525
+    short_sha: 6e1d76d
+    changed_paths:
+      - pipersynth/__init__.py
+      - pipersynth/pipeline.py
+      - pipersynth/plan_adapter.py
+      - pyproject.toml
+      - tests/test_pipeline.py
+      - tests/test_utterplan_integration.py
+      - tests/test_utterplan_v2_annotations.py
+    stats:
+      files_changed: 7
+      insertions: 388
+      deletions: 16
+    inspected: true
+    inspected_paths:
+      - pipersynth/__init__.py
+      - pipersynth/pipeline.py
+      - pipersynth/plan_adapter.py
+      - pyproject.toml
+      - tests/test_utterplan_v2_annotations.py
+    observed_behavior:
+      Adapts plan rendering to the utterplan 0.2 line with canonical
+      speech-only segment rendering through prepare_plan_segments and PreparedAudioSegments
+      without semantic pause padding or prosody, token annotations clipped to segment
+      spans and carrying morph fields, linguistic run provenance in unit metadata, PlanRenderingError
+      when the active frontend cannot accept annotations, and dependency bound updates
+      for utterplan and piperg2p.
+    public_impact: public
+    decision: accepted
+    stale: false
+    evidence_subject: "feat: adapt to utterplan 0.2.0"
+    target_entry_id: entry-0007
+    notes: Dependency and rendering API change visible to library users.

@@ -1,0 +1,816 @@
+ benchmarks/voice_loudness.py           | 433 ++++++++++++++++++++++++++++-----
+ examples/README.md                     |   2 +-
+ tests/test_voice_loudness_benchmark.py | 200 +++++++++++++++
+ 3 files changed, 569 insertions(+), 66 deletions(-)
+
+diff --git a/benchmarks/voice_loudness.py b/benchmarks/voice_loudness.py
+index 584289a..71b12b1 100644
+--- a/benchmarks/voice_loudness.py
++++ b/benchmarks/voice_loudness.py
+@@ -8,6 +8,9 @@ import csv
+ import json
+ import math
+ import statistics
++import subprocess
++import sys
++import tempfile
+ from collections.abc import Mapping, Sequence
+ from dataclasses import asdict, dataclass
+ from importlib.metadata import PackageNotFoundError, version
+@@ -107,10 +110,12 @@ def generated_with() -> dict[str, str]:
+         "audiosig": _package_version("audiosig"),
+         "onnxvoice": _package_version("onnxvoice"),
+         "utterplan": _package_version("utterplan"),
++        "spokenform": _package_version("spokenform"),
++        "piperg2p": _package_version("piperg2p"),
+     }
+
+
+-def _spoken_count_words(locale: str) -> tuple[str, ...]:
++def _spoken_count_words(locale: str) -> tuple[str, tuple[str, ...]]:
+     try:
+         from spokenform import normalize_language, normalize_numbers
+     except ImportError as exc:
+@@ -119,28 +124,26 @@ def _spoken_count_words(locale: str) -> tuple[str, ...]:
+     words = tuple(normalize_numbers(str(value), language=language) for value in COUNT_VALUES)
+     if any(not word.strip() or any(character.isdigit() for character in word) for word in words):
+         raise StimulusResolutionError(f"spokenform produced unresolved digits for {locale!r}")
+-    return words
++    return language, words
+
+
+ def resolve_count_stimulus(
+     locale: str, fallbacks: dict[str, dict[str, Any]] | None = None
+ ) -> LoudnessStimulus:
+     """Resolve spoken cardinal words, using only a reviewed locale fallback."""
+-
+     fallbacks = load_fallbacks() if fallbacks is None else fallbacks
++    normalized = locale.replace("-", "_").lower()
+     try:
+-        words = _spoken_count_words(locale)
+-        normalized = locale.replace("-", "_").lower()
++        normalized_language, words = _spoken_count_words(locale)
+         return LoudnessStimulus(
+             locale=locale,
+-            normalized_language=normalized,
++            normalized_language=normalized_language,
+             source=COUNT_SOURCE,
+             spoken_text=", ".join(words) + ".",
+             generator="spokenform",
+             fallback_used=False,
+         )
+     except Exception as error:
+-        normalized = locale.replace("-", "_").lower()
+         base = normalized.split("_", 1)[0]
+         fallback = fallbacks.get(locale) or fallbacks.get(normalized) or fallbacks.get(base)
+         if not isinstance(fallback, Mapping) or not isinstance(fallback.get("text"), str):
+@@ -183,6 +186,8 @@ def stimulus_failures_for_entries(
+         {
+             **dict(entry),
+             "status": "unsupported_stimulus",
++            "phase": "stimulus_preflight",
++            "error_type": "StimulusResolutionError",
+             "error": unsupported[str(entry["locale"])],
+         }
+         for entry in entries
+@@ -249,63 +254,318 @@ def _rms_dbfs(audio: np.ndarray) -> float:
+     return -math.inf if rms == 0 else 20 * math.log10(rms)
+
+
+-def measure_repeats(
++def _failure_row(
+     entry: Mapping[str, Any],
++    repeat: int,
+     *,
++    phase: str,
++    error_type: str,
++    error: str,
++) -> dict[str, Any]:
++    return {
++        **dict(entry),
++        "repeat": repeat,
++        "status": "failed",
++        "phase": phase,
++        "error_type": error_type,
++        "error": error,
++    }
++
++
++def measure_model(
++    entries: Sequence[Mapping[str, Any]],
++    *,
++    stimulus: LoudnessStimulus,
+     cache_dir: str | Path | None = None,
+     offline: bool = False,
+     repeats: int = 3,
+     refresh_catalog: bool = False,
+-    stimulus: LoudnessStimulus,
+ ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+-    """Measure one catalog voice/speaker repeatedly with leveling disabled."""
+-
++    """Measure every speaker identity for one Piper model."""
++    if not entries:
++        raise ValueError("model worker requires at least one identity")
++    if repeats < 1:
++        raise ValueError("model worker requires at least one repeat")
++    model_ids = {str(entry["model_id"]) for entry in entries}
++    locales = {str(entry["locale"]) for entry in entries}
++    if len(model_ids) != 1:
++        raise ValueError("model worker received multiple model IDs")
++    if len(locales) != 1:
++        raise ValueError("model worker received multiple locales")
++    if stimulus.locale not in locales:
++        raise ValueError("model worker stimulus locale does not match model locale")
++
++    model_id = next(iter(model_ids))
+     measurements: list[dict[str, Any]] = []
+     failures: list[dict[str, Any]] = []
+     pipeline: PiperPipeline | None = None
+     try:
+-        pipeline = PiperPipeline.from_pretrained(
+-            str(entry["model_id"]),
+-            cache_dir=cache_dir,
+-            offline=offline,
+-            refresh_catalog=refresh_catalog,
+-            generation=GenerationConfig(
+-                speaker=int(entry["speaker_id"]), normalize_audio=True, volume=1.0
+-            ),
+-            loudness=LoudnessConfig(voice_leveling="off", target_lufs=None),
+-            language=str(entry["locale"]),
+-        )
+-        for repeat in range(repeats):
+-            try:
+-                result = pipeline.run(stimulus.spoken_text)
+-                audio = np.asarray(result.audio, dtype=np.float32).reshape(-1)
+-                metrics = measure_loudness(audio, sample_rate=result.sample_rate)
+-                measurements.append(
+-                    {
+-                        **dict(entry),
+-                        "repeat": repeat,
+-                        "stimulus": stimulus.spoken_text,
+-                        "stimulus_generator": stimulus.generator,
+-                        "sample_rate": result.sample_rate,
++        try:
++            pipeline = PiperPipeline.from_pretrained(
++                model_id,
++                cache_dir=cache_dir,
++                offline=offline,
++                refresh_catalog=refresh_catalog,
++                generation=GenerationConfig(
++                    speaker=int(entries[0]["speaker_id"]),
++                    normalize_audio=True,
++                    volume=1.0,
++                ),
++                loudness=LoudnessConfig(voice_leveling="off", target_lufs=None),
++                language=str(entries[0]["locale"]),
++                language_policy="allow",
++            )
++        except Exception as exc:
++            for entry in entries:
++                for repeat in range(repeats):
++                    failures.append(
++                        _failure_row(
++                            entry,
++                            repeat,
++                            phase="pipeline_open",
++                            error_type=type(exc).__name__,
++                            error=str(exc),
++                        )
++                    )
++            return measurements, failures
++
++        for entry in entries:
++            for repeat in range(repeats):
++                try:
++                    result = pipeline.run(stimulus.spoken_text, speaker=int(entry["speaker_id"]))
++                    audio = np.asarray(result.audio, dtype=np.float32).reshape(-1)
++                    metrics = measure_loudness(audio, sample_rate=result.sample_rate)
++                    metric_values = {
+                         "integrated_lufs": float(metrics.integrated_lufs),
+                         "sample_peak_dbfs": float(metrics.sample_peak_dbfs),
+                         "true_peak_dbtp": float(metrics.true_peak_dbtp),
+                         "rms_dbfs": _rms_dbfs(audio),
+-                        "duration_seconds": audio.size / result.sample_rate,
+-                        "pipersynth_version": _package_version("pipersynth"),
+-                        "audiosig_version": _package_version("audiosig"),
+-                        "onnxvoice_version": _package_version("onnxvoice"),
+-                        "utterplan_version": _package_version("utterplan"),
+                     }
+-                )
+-            except Exception as exc:
+-                failures.append({**dict(entry), "repeat": repeat, "error": str(exc)})
++                    if not all(math.isfinite(value) for value in metric_values.values()):
++                        failures.append(
++                            _failure_row(
++                                entry,
++                                repeat,
++                                phase="measurement",
++                                error_type="NonFiniteMeasurement",
++                                error=f"non-finite loudness metrics: {metric_values}",
++                            )
++                        )
++                        continue
++                    measurements.append(
++                        {
++                            **dict(entry),
++                            "repeat": repeat,
++                            "stimulus": stimulus.spoken_text,
++                            "stimulus_generator": stimulus.generator,
++                            "sample_rate": result.sample_rate,
++                            **metric_values,
++                            "duration_seconds": audio.size / result.sample_rate,
++                            "pipersynth_version": _package_version("pipersynth"),
++                            "audiosig_version": _package_version("audiosig"),
++                            "onnxvoice_version": _package_version("onnxvoice"),
++                            "utterplan_version": _package_version("utterplan"),
++                        }
++                    )
++                except Exception as exc:
++                    failures.append(
++                        _failure_row(
++                            entry,
++                            repeat,
++                            phase="synthesis",
++                            error_type=type(exc).__name__,
++                            error=str(exc),
++                        )
++                    )
+     finally:
+         if pipeline is not None:
+             pipeline.close()
+     return measurements, failures
+
+
++def measure_repeats(
++    entry: Mapping[str, Any],
++    *,
++    cache_dir: str | Path | None = None,
++    offline: bool = False,
++    repeats: int = 3,
++    refresh_catalog: bool = False,
++    stimulus: LoudnessStimulus,
++) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
++    """Compatibility wrapper for measuring one identity."""
++    return measure_model(
++        [entry],
++        cache_dir=cache_dir,
++        offline=offline,
++        repeats=repeats,
++        refresh_catalog=refresh_catalog,
++        stimulus=stimulus,
++    )
++
++
++def group_entries_by_model(
++    entries: Sequence[Mapping[str, Any]],
++) -> list[tuple[str, list[dict[str, Any]]]]:
++    """Group identities by model in deterministic model and speaker order."""
++    grouped: dict[str, list[dict[str, Any]]] = {}
++    for entry in entries:
++        grouped.setdefault(str(entry["model_id"]), []).append(dict(entry))
++    return [
++        (
++            model_id,
++            sorted(grouped[model_id], key=lambda entry: int(entry["speaker_id"])),
++        )
++        for model_id in sorted(grouped)
++    ]
++
++
++def worker_failures(
++    entries: Sequence[Mapping[str, Any]],
++    *,
++    repeats: int,
++    error: str,
++    error_type: str,
++) -> list[dict[str, Any]]:
++    return [
++        _failure_row(
++            entry,
++            repeat,
++            phase="worker_process",
++            error_type=error_type,
++            error=error,
++        )
++        for entry in entries
++        for repeat in range(repeats)
++    ]
++
++
++def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    tmp_path: Path | None = None
++    try:
++        with tempfile.NamedTemporaryFile(
++            mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
++        ) as handle:
++            tmp_path = Path(handle.name)
++            json.dump(payload, handle, indent=2, sort_keys=True, allow_nan=False)
++            handle.write("\n")
++        tmp_path.replace(path)
++    finally:
++        if tmp_path is not None and tmp_path.exists():
++            tmp_path.unlink()
++
++
++def run_worker_job(job_path: Path, output_path: Path) -> int:
++    try:
++        job = json.loads(job_path.read_text(encoding="utf-8"))
++        if not isinstance(job, Mapping) or job.get("schema") != 1:
++            raise ValueError("worker job has an invalid schema")
++        entries = job["entries"]
++        if not isinstance(entries, list):
++            raise ValueError("worker job entries must be a list")
++        stimulus = LoudnessStimulus(**job["stimulus"])
++        measurements, failures = measure_model(
++            entries,
++            stimulus=stimulus,
++            cache_dir=job.get("cache_dir"),
++            offline=bool(job.get("offline", False)),
++            repeats=int(job["repeats"]),
++        )
++        payload = {
++            "schema": 1,
++            "model_id": str(job["model_id"]),
++            "measurements": measurements,
++            "failures": failures,
++        }
++        _write_json_atomic(output_path, payload)
++        return 0
++    except Exception as exc:
++        print(f"worker failed: {type(exc).__name__}: {exc}", file=sys.stderr)
++        return 1
++
++
++def run_model_isolated(
++    entries: Sequence[Mapping[str, Any]],
++    *,
++    stimulus: LoudnessStimulus,
++    cache_dir: str | Path | None = None,
++    offline: bool = False,
++    repeats: int = 3,
++) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
++    """Run one model in a fresh Python process and read its result file."""
++    if not entries:
++        raise ValueError("isolated model run requires at least one identity")
++    model_id = str(entries[0]["model_id"])
++    with tempfile.TemporaryDirectory(prefix="pipersynth-loudness-") as directory:
++        directory_path = Path(directory)
++        job_path = directory_path / "job.json"
++        output_path = directory_path / "result.json"
++        _write_json_atomic(
++            job_path,
++            {
++                "schema": 1,
++                "model_id": model_id,
++                "locale": str(entries[0]["locale"]),
++                "entries": [dict(entry) for entry in entries],
++                "stimulus": asdict(stimulus),
++                "repeats": repeats,
++                "cache_dir": str(cache_dir) if cache_dir is not None else None,
++                "offline": offline,
++            },
++        )
++        command = [
++            sys.executable,
++            str(Path(__file__).resolve()),
++            "--_worker-job",
++            str(job_path),
++            "--_worker-output",
++            str(output_path),
++        ]
++        try:
++            completed = subprocess.run(command, check=False)
++        except Exception as exc:
++            return [], worker_failures(
++                entries,
++                repeats=repeats,
++                error=str(exc),
++                error_type=type(exc).__name__,
++            )
++        if completed.returncode != 0:
++            return [], worker_failures(
++                entries,
++                repeats=repeats,
++                error=f"worker exited with status {completed.returncode}",
++                error_type="WorkerProcessError",
++            )
++        if not output_path.is_file():
++            return [], worker_failures(
++                entries,
++                repeats=repeats,
++                error="worker did not produce a result file",
++                error_type="WorkerProcessError",
++            )
++        try:
++            payload = json.loads(output_path.read_text(encoding="utf-8"))
++            if not isinstance(payload, Mapping) or payload.get("schema") != 1:
++                raise ValueError("worker result has an invalid schema")
++            if str(payload.get("model_id")) != model_id:
++                raise ValueError("worker result model ID does not match the job")
++            measurements = payload.get("measurements")
++            failures = payload.get("failures")
++            if not isinstance(measurements, list) or not isinstance(failures, list):
++                raise ValueError("worker result rows must be lists")
++            if not all(isinstance(row, Mapping) for row in [*measurements, *failures]):
++                raise ValueError("worker result rows must be objects")
++            return [dict(row) for row in measurements], [dict(row) for row in failures]
++        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
++            return [], worker_failures(
++                entries,
++                repeats=repeats,
++                error=f"invalid worker result: {exc}",
++                error_type="WorkerResultError",
++            )
++
++
+ def aggregate_measurements(
+     measurements: Sequence[Mapping[str, Any]], *, repeats: int = 3, max_mad_lu: float = 0.75
+ ) -> list[dict[str, Any]]:
+@@ -316,6 +576,8 @@ def aggregate_measurements(
+     for key, items in sorted(grouped.items()):
+         values = [float(item["integrated_lufs"]) for item in items]
+         finite = [value for value in values if math.isfinite(value)]
++        peaks = [float(item["true_peak_dbtp"]) for item in items]
++        finite_peaks = [value for value in peaks if math.isfinite(value)]
+         if not finite:
+             median_lufs = mad_lu = None
+             status = "non_finite_loudness"
+@@ -323,13 +585,12 @@ def aggregate_measurements(
+             median_lufs = statistics.median(finite)
+             mad_lu = statistics.median(abs(value - median_lufs) for value in finite)
+             status = "eligible"
+-            if len(finite) != len(values):
++            if len(finite) != len(values) or len(finite_peaks) != len(peaks):
+                 status = "non_finite_loudness"
+             elif len(finite) != repeats:
+                 status = "insufficient_repeats"
+             elif mad_lu > max_mad_lu:
+                 status = "high_variability"
+-        peaks = [float(item["true_peak_dbtp"]) for item in items]
+         rows.append(
+             {
+                 "model_source": items[0]["model_source"],
+@@ -343,7 +604,7 @@ def aggregate_measurements(
+                 "repeat_count": len(items),
+                 "median_lufs": median_lufs,
+                 "mad_lu": mad_lu,
+-                "max_true_peak_dbtp": max(peaks) if peaks else math.nan,
++                "max_true_peak_dbtp": max(finite_peaks) if finite_peaks else None,
+                 "status": status,
+             }
+         )
+@@ -358,9 +619,10 @@ def calibration_candidate(
+     max_boost_db: float = 8.0,
+     max_attenuation_db: float = 12.0,
+ ) -> dict[str, Any]:
++    status = str(aggregate["status"])
++    if status == "non_finite_loudness":
++        return {**dict(aggregate), "status": status}
+     measured = float(aggregate["median_lufs"])
+-    if str(aggregate["status"]) == "non_finite_loudness":
+-        return {**dict(aggregate), "status": "non_finite_loudness"}
+     max_peak = float(aggregate["max_true_peak_dbtp"])
+     requested = reference_lufs - measured
+     safe = peak_ceiling_dbtp - max_peak
+@@ -469,6 +731,26 @@ def build_report(
+     }
+
+
++def _failure_summary_lines(failures: Sequence[Mapping[str, Any]]) -> list[str]:
++    grouped: dict[tuple[str, str], set[str]] = {}
++    for failure in failures:
++        phase = str(failure.get("phase", "unknown"))
++        category = str(failure.get("error_type") or failure.get("error") or "unknown")
++        identity = str(
++            failure.get(
++                "calibration_key",
++                f"{failure.get('model_id', 'unknown')}:{failure.get('speaker_id', 'unknown')}",
++            )
++        )
++        grouped.setdefault((phase, category), set()).add(identity)
++    if not grouped:
++        return ["- none"]
++    return [
++        f"- {phase}/{category}: {len(identities)} identities"
++        for (phase, category), identities in sorted(grouped.items())
++    ]
++
++
+ def write_outputs(
+     report: Mapping[str, Any], output: Path, *, candidate_path: Path | None = None
+ ) -> bool:
+@@ -484,21 +766,33 @@ def write_outputs(
+             writer.writeheader()
+             writer.writerows(rows)
+     (output / "failures.json").write_text(
+-        json.dumps(report["failures"], indent=2, sort_keys=True) + "\n", encoding="utf-8"
++        json.dumps(report["failures"], indent=2, sort_keys=True, allow_nan=False) + "\n",
++        encoding="utf-8",
+     )
+     coverage = report["coverage"]
+-    (output / "summary.md").write_text(
+-        "# PiperSynth voice loudness benchmark\n\n"
+-        f"- Expected identities: {coverage['catalog_identities_expected']}\n"
+-        f"- Measured identities: {coverage['catalog_identities_measured']}\n"
+-        f"- Failed identities: {coverage['catalog_identities_failed']}\n"
+-        f"- Complete coverage: {coverage['complete']}\n"
+-        f"- Distinct locales: {report['language_preflight']['supported_count'] + report['language_preflight']['unsupported_count']}\n"
+-        f"- Supported stimulus locales: {report['language_preflight']['supported_count']}\n"
+-        f"- Unsupported stimulus locales: {report['language_preflight']['unsupported_count']}\n"
+-        f"- Unsupported: {', '.join(sorted(report['language_preflight']['locales'])) if report['language_preflight']['unsupported_count'] else 'none'}\n",
+-        encoding="utf-8",
++    preflight = report["language_preflight"]
++    unsupported_locales = sorted(
++        locale
++        for locale, item in preflight["locales"].items()
++        if item.get("status") == "unsupported"
+     )
++    summary = [
++        "# PiperSynth voice loudness benchmark",
++        "",
++        f"- Expected identities: {coverage['catalog_identities_expected']}",
++        f"- Measured identities: {coverage['catalog_identities_measured']}",
++        f"- Failed identities: {coverage['catalog_identities_failed']}",
++        f"- Complete coverage: {coverage['complete']}",
++        f"- Distinct locales: {preflight['supported_count'] + preflight['unsupported_count']}",
++        f"- Supported stimulus locales: {preflight['supported_count']}",
++        f"- Unsupported stimulus locales: {preflight['unsupported_count']}",
++        f"- Unsupported: {', '.join(unsupported_locales) if unsupported_locales else 'none'}",
++        "",
++        "## Failure summary",
++        *_failure_summary_lines(report["failures"]),
++        "",
++    ]
++    (output / "summary.md").write_text("\n".join(summary), encoding="utf-8")
+     if candidate_path is not None:
+         if not coverage["complete"]:
+             return False
+@@ -544,7 +838,13 @@ def main(argv: Sequence[str] | None = None) -> int:
+     parser.add_argument("--list-stimuli", action="store_true")
+     parser.add_argument("--allow-failures", action="store_true")
+     parser.add_argument("--write-calibration-candidate", type=Path)
++    parser.add_argument("--_worker-job", type=Path, help=argparse.SUPPRESS)
++    parser.add_argument("--_worker-output", type=Path, help=argparse.SUPPRESS)
+     args = parser.parse_args(argv)
++    if args._worker_job is not None:
++        if args._worker_output is None:
++            parser.error("--_worker-output is required with --_worker-job")
++        return run_worker_job(args._worker_job, args._worker_output)
+     policy = load_policy()
+     if args.repeats is not None:
+         policy = BenchmarkPolicy(**{**asdict(policy), "repeats": args.repeats})
+@@ -575,16 +875,19 @@ def main(argv: Sequence[str] | None = None) -> int:
+         )
+         return 2
+     measurable_entries = [entry for entry in entries if str(entry["locale"]) in preflight.stimuli]
++    model_jobs = group_entries_by_model(measurable_entries)
+     measurements: list[dict[str, Any]] = []
+-    for index, entry in enumerate(measurable_entries, 1):
+-        print(f"[{index}/{len(measurable_entries)}] {entry['calibration_key']}")
+-        measured, failed = measure_repeats(
+-            entry,
++    for model_index, (model_id, model_entries) in enumerate(model_jobs, 1):
++        locale = str(model_entries[0]["locale"])
++        print(
++            f"[model {model_index}/{len(model_jobs)}] {model_id} ({len(model_entries)} identities)"
++        )
++        measured, failed = run_model_isolated(
++            model_entries,
++            stimulus=preflight.stimuli[locale],
+             cache_dir=args.cache_dir,
+             offline=args.offline,
+             repeats=policy.repeats,
+-            refresh_catalog=False,
+-            stimulus=preflight.stimuli[str(entry["locale"])],
+         )
+         measurements.extend(measured)
+         failures.extend(failed)
+diff --git a/examples/README.md b/examples/README.md
+index 3c5d146..baecc5d 100644
+--- a/examples/README.md
++++ b/examples/README.md
+@@ -53,7 +53,7 @@ Use `--skip-unsupported` only for a clearly marked partial showcase. The all-voi
+
+ ## Loudness benchmark preflight
+
+-The loudness benchmark resolves every distinct Piper locale and count stimulus before creating the first synthesis pipeline. Unsupported locales are reported together and represented as identity-level failures. Use `python benchmarks/voice_loudness.py --list-stimuli` to inspect this preflight without inference.
++The loudness benchmark resolves every distinct Piper locale and count stimulus during a parent-process preflight before synthesis. Each renderable Piper model then runs in one fresh Python process, where one pipeline measures all speakers and repeats for that model. This prevents process-global PiperG2P and eSpeak state from leaking between models. Stimulus support and renderer support are reported separately, so Spokenform support does not imply PiperG2P support. Use `python benchmarks/voice_loudness.py --list-stimuli` to inspect the stimulus preflight without inference.
+
+ Direct phoneme mode is intentionally excluded from this suite because
+ `is_phonemes=True` bypasses UtterPlan. The library convenience APIs remain supported;
+diff --git a/tests/test_voice_loudness_benchmark.py b/tests/test_voice_loudness_benchmark.py
+index 872d01f..d130dfb 100644
+--- a/tests/test_voice_loudness_benchmark.py
++++ b/tests/test_voice_loudness_benchmark.py
+@@ -1,6 +1,10 @@
+ import inspect
++import json
+ from collections.abc import Mapping
++from pathlib import Path
++from types import SimpleNamespace
+
++import numpy as np
+ import pytest
+
+ import benchmarks.voice_loudness as benchmark
+@@ -129,3 +133,199 @@ def test_coverage_does_not_double_count_explicit_failures() -> None:
+     report = benchmark.coverage_report(entries, aggregates, [{"calibration_key": "two"}], repeats=3)
+     assert report["catalog_identities_failed"] == 1
+     assert report["complete"] is False
++
++
++def _model_entries(model_id="model"):
++    return [
++        {
++            "model_source": "piper",
++            "model_id": model_id,
++            "quality": "medium",
++            "speaker_id": speaker_id,
++            "speaker_name": None,
++            "calibration_key": f"piper:{model_id}:medium:speaker-{speaker_id}",
++            "locale": "en_US",
++        }
++        for speaker_id in (0, 1)
++    ]
++
++
++def _stimulus():
++    return benchmark.LoudnessStimulus(
++        "en_US", "en", benchmark.COUNT_SOURCE, "one, two.", "test", False
++    )
++
++
++def test_group_entries_by_model_is_deterministic_and_preserves_speakers():
++    entries = [
++        {"model_id": "b", "speaker_id": 0},
++        {"model_id": "a", "speaker_id": 1},
++        {"model_id": "a", "speaker_id": 0},
++    ]
++    grouped = benchmark.group_entries_by_model(entries)
++    assert [(model_id, [item["speaker_id"] for item in items]) for model_id, items in grouped] == [
++        ("a", [0, 1]),
++        ("b", [0]),
++    ]
++
++
++def test_measure_model_reuses_one_pipeline_and_overrides_speakers(monkeypatch):
++    opened = []
++    runs = []
++    closed = []
++
++    class FakePipeline:
++        def run(self, text, *, speaker):
++            runs.append((text, speaker))
++            return SimpleNamespace(audio=np.ones(100, dtype=np.float32), sample_rate=22050)
++
++        def close(self):
++            closed.append(True)
++
++    def open_pipeline(model_id, **kwargs):
++        opened.append((model_id, kwargs))
++        return FakePipeline()
++
++    monkeypatch.setattr(benchmark.PiperPipeline, "from_pretrained", staticmethod(open_pipeline))
++    monkeypatch.setattr(
++        benchmark,
++        "measure_loudness",
++        lambda audio, sample_rate: SimpleNamespace(
++            integrated_lufs=-20.0, sample_peak_dbfs=-3.0, true_peak_dbtp=-3.0
++        ),
++    )
++
++    measurements, failures = benchmark.measure_model(
++        _model_entries(), stimulus=_stimulus(), repeats=2
++    )
++
++    assert not failures
++    assert len(opened) == 1
++    assert len(closed) == 1
++    assert [speaker for _, speaker in runs] == [0, 0, 1, 1]
++    assert opened[0][1]["language_policy"] == "allow"
++    assert opened[0][1]["loudness"].voice_leveling == "off"
++    assert opened[0][1]["loudness"].target_lufs is None
++    assert opened[0][1]["generation"].normalize_audio is True
++    assert opened[0][1]["generation"].volume == 1.0
++    assert len(measurements) == 4
++
++
++def test_run_model_isolated_launches_one_process_per_model(monkeypatch):
++    commands = []
++    failures = []
++
++    def launch(command, check):
++        commands.append(command)
++        output = Path(command[command.index("--_worker-output") + 1])
++        output.write_text(
++            json.dumps(
++                {
++                    "schema": 1,
++                    "model_id": json.loads(
++                        Path(command[command.index("--_worker-job") + 1]).read_text()
++                    )["model_id"],
++                    "measurements": [],
++                    "failures": [],
++                }
++            ),
++            encoding="utf-8",
++        )
++        return SimpleNamespace(returncode=0)
++
++    monkeypatch.setattr(benchmark.subprocess, "run", launch)
++    for _model_id, entries in benchmark.group_entries_by_model(
++        _model_entries("a") + _model_entries("b")
++    ):
++        _, model_failures = benchmark.run_model_isolated(entries, stimulus=_stimulus(), repeats=1)
++        failures.extend(model_failures)
++
++    assert not failures
++    assert len(commands) == 2
++    assert all(command[1].endswith("benchmarks/voice_loudness.py") for command in commands)
++
++
++def test_malformed_worker_result_fails_every_expected_repeat(monkeypatch):
++    def launch(command, check):
++        output = Path(command[command.index("--_worker-output") + 1])
++        output.write_text("not json", encoding="utf-8")
++        return SimpleNamespace(returncode=0)
++
++    monkeypatch.setattr(benchmark.subprocess, "run", launch)
++    _, failures = benchmark.run_model_isolated(_model_entries(), stimulus=_stimulus(), repeats=3)
++    assert len(failures) == 6
++    assert {item["phase"] for item in failures} == {"worker_process"}
++    assert {item["error_type"] for item in failures} == {"WorkerResultError"}
++
++
++def test_worker_crash_fails_every_expected_repeat(monkeypatch):
++    monkeypatch.setattr(
++        benchmark.subprocess, "run", lambda command, check: SimpleNamespace(returncode=7)
++    )
++    _, failures = benchmark.run_model_isolated(_model_entries(), stimulus=_stimulus(), repeats=3)
++    assert len(failures) == 6
++    assert {item["phase"] for item in failures} == {"worker_process"}
++    assert {item["error_type"] for item in failures} == {"WorkerProcessError"}
++
++
++def test_nonfinite_measurement_becomes_json_safe_failure(monkeypatch, tmp_path):
++    class FakePipeline:
++        def run(self, text, *, speaker):
++            return SimpleNamespace(audio=np.ones(10, dtype=np.float32), sample_rate=22050)
++
++        def close(self):
++            pass
++
++    monkeypatch.setattr(
++        benchmark.PiperPipeline,
++        "from_pretrained",
++        staticmethod(lambda *args, **kwargs: FakePipeline()),
++    )
++    monkeypatch.setattr(
++        benchmark,
++        "measure_loudness",
++        lambda audio, sample_rate: SimpleNamespace(
++            integrated_lufs=float("nan"), sample_peak_dbfs=-3.0, true_peak_dbtp=-3.0
++        ),
++    )
++    entries = _model_entries()[:1]
++    measurements, failures = benchmark.measure_model(entries, stimulus=_stimulus(), repeats=1)
++    report = benchmark.build_report(entries, measurements, failures, benchmark.load_policy())
++
++    assert measurements == []
++    assert len(failures) == 1
++    assert failures[0]["phase"] == "measurement"
++    benchmark.write_outputs(report, tmp_path)
++    assert "NaN" not in (tmp_path / "measurements.json").read_text()
++    json.loads((tmp_path / "measurements.json").read_text())
++
++
++def test_spokenform_canonical_language_is_recorded(monkeypatch):
++    monkeypatch.setattr(
++        benchmark, "_spoken_count_words", lambda locale: ("canonical", ("one", "two"))
++    )
++    stimulus = benchmark.resolve_count_stimulus("regional", {})
++    assert stimulus.normalized_language == "canonical"
++
++
++def test_summary_lists_only_unsupported_locales_and_provenance(tmp_path):
++    entries = [
++        {"calibration_key": "supported", "locale": "en_US"},
++        {"calibration_key": "unsupported", "locale": "bg_BG"},
++    ]
++    preflight = benchmark.StimulusPreflight(
++        stimuli={"en_US": _stimulus()}, unsupported={"bg_BG": "missing"}
++    )
++    failures = benchmark.stimulus_failures_for_entries(entries, {"bg_BG": "missing"})
++    report = benchmark.build_report(
++        entries, [], failures, benchmark.load_policy(), language_preflight=preflight
++    )
++    benchmark.write_outputs(report, tmp_path)
++    summary = (tmp_path / "summary.md").read_text()
++    unsupported_line = next(
++        line for line in summary.splitlines() if line.startswith("- Unsupported:")
++    )
++    assert unsupported_line == "- Unsupported: bg_BG"
++    assert "## Failure summary" in summary
++    assert report["generated_with"]["spokenform"]
++    assert report["generated_with"]["piperg2p"]

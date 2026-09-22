@@ -1,0 +1,130 @@
+{
+  "candidate_count": 6,
+  "candidates": [
+    {
+      "additions": 1609,
+      "deletions": 35,
+      "patch_file": "e4f1c68.patch",
+      "patch_sha256": "268f7676d67e9402da331750674f5e302abf8c13b80cc27a4cde354f63cab8fe",
+      "paths": [
+        ".gitignore",
+        "README.md",
+        "benchmarks/data/voice_loudness_count_fallbacks.json",
+        "benchmarks/data/voice_loudness_policy.json",
+        "benchmarks/voice_loudness.py",
+        "benchmarks/voice_loudness_calibration.py",
+        "docs/architecture.md",
+        "pipersynth/__init__.py",
+        "pipersynth/audio.py",
+        "pipersynth/audio_job.py",
+        "pipersynth/config.py",
+        "pipersynth/data/voice_level_calibration.json",
+        "pipersynth/loudness_config.py",
+        "pipersynth/pipeline.py",
+        "pipersynth/plan_adapter.py",
+        "pipersynth/types.py",
+        "pipersynth/voice.py",
+        "pipersynth/voice_level.py",
+        "pyproject.toml",
+        "tests/test_voice_leveling.py",
+        "tests/test_voice_loudness_benchmark.py",
+        "tests/test_voice_loudness_calibration.py"
+      ],
+      "sha": "e4f1c6860f03ffec363d09ac2d03c0eeaad4aad4",
+      "short_sha": "e4f1c68",
+      "source_ref": "git:e4f1c6860f03ffec363d09ac2d03c0eeaad4aad4"
+    },
+    {
+      "additions": 874,
+      "deletions": 15,
+      "patch_file": "fd848fa.patch",
+      "patch_sha256": "10cad73e16b740e1cc50c1fd2473ec52163a60940ea6aed32e58c819e01d2be3",
+      "paths": [
+        "benchmarks/voice_loudness.py",
+        "examples/README.md",
+        "examples/all_voices.py",
+        "examples/run_all.py",
+        "tests/test_all_voices_example.py",
+        "tests/test_examples_runner.py",
+        "tests/test_voice_loudness_benchmark.py"
+      ],
+      "sha": "fd848fa659ea63768051c01313e3d82e79ec0d1b",
+      "short_sha": "fd848fa",
+      "source_ref": "git:fd848fa659ea63768051c01313e3d82e79ec0d1b"
+    },
+    {
+      "additions": 71,
+      "deletions": 31,
+      "patch_file": "99bb836.patch",
+      "patch_sha256": "8c29bd1113d0052aa8080f03945bf64f3a242fcf8725f4979afeff501bcbd2a6",
+      "paths": [
+        "benchmarks/voice_loudness.py",
+        "examples/README.md",
+        "examples/all_voices.py",
+        "examples/run_all.py",
+        "tests/test_all_voices_example.py",
+        "tests/test_examples_runner.py",
+        "tests/test_voice_loudness_benchmark.py"
+      ],
+      "sha": "99bb8364904dc20e34f2c90f53d09c54c1d99312",
+      "short_sha": "99bb836",
+      "source_ref": "git:99bb8364904dc20e34f2c90f53d09c54c1d99312"
+    },
+    {
+      "additions": 569,
+      "deletions": 66,
+      "patch_file": "b87a4e9.patch",
+      "patch_sha256": "23c7c906b57b36eda950ccf672567a6244dc73fc26d149a7d2b090321f46a004",
+      "paths": [
+        "benchmarks/voice_loudness.py",
+        "examples/README.md",
+        "tests/test_voice_loudness_benchmark.py"
+      ],
+      "sha": "b87a4e9bfde6d6c7c2d4f2d9c29a54cd9ff9e9a6",
+      "short_sha": "b87a4e9",
+      "source_ref": "git:b87a4e9bfde6d6c7c2d4f2d9c29a54cd9ff9e9a6"
+    },
+    {
+      "additions": 24576,
+      "deletions": 20,
+      "patch_file": "0208866.patch",
+      "patch_sha256": "1738851dd9e79ab45cb67cea316632ca71b034460d18a052373868a0c68e18e5",
+      "paths": [
+        "benchmarks/voice_loudness_calibration.py",
+        "docs/performance.md",
+        "pipersynth/data/voice_level_calibration.json",
+        "tests/test_packaged_voice_calibration_data.py",
+        "tests/test_voice_loudness_calibration.py"
+      ],
+      "sha": "0208866f807084e80142feb3bd6caba9f2eb1af3",
+      "short_sha": "0208866",
+      "source_ref": "git:0208866f807084e80142feb3bd6caba9f2eb1af3"
+    },
+    {
+      "additions": 388,
+      "deletions": 16,
+      "patch_file": "6e1d76d.patch",
+      "patch_sha256": "e0cde003ea8f977688a1f716d879e9f2c91c6bac67e7d80f7590f43768e7b0fa",
+      "paths": [
+        "pipersynth/__init__.py",
+        "pipersynth/pipeline.py",
+        "pipersynth/plan_adapter.py",
+        "pyproject.toml",
+        "tests/test_pipeline.py",
+        "tests/test_utterplan_integration.py",
+        "tests/test_utterplan_v2_annotations.py"
+      ],
+      "sha": "6e1d76d55301e228bb9951a32c56e5c02e989525",
+      "short_sha": "6e1d76d",
+      "source_ref": "git:6e1d76d55301e228bb9951a32c56e5c02e989525"
+    }
+  ],
+  "git_base_ref": "f505c023b8c335aaf17dd0623682e558348b9c8f",
+  "git_base_sha": "f505c023b8c335aaf17dd0623682e558348b9c8f",
+  "git_head_ref": "6e1d76d55301e228bb9951a32c56e5c02e989525",
+  "git_head_sha": "6e1d76d55301e228bb9951a32c56e5c02e989525",
+  "include_merges": "nontrivial",
+  "object_type": "git_evidence_manifest",
+  "release_version": "v0.1.3",
+  "schema_version": 1
+}

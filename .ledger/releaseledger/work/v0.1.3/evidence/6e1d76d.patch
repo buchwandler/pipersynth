@@ -1,0 +1,584 @@
+ pipersynth/__init__.py                 |   3 +-
+ pipersynth/pipeline.py                 | 105 +++++++++++++++-
+ pipersynth/plan_adapter.py             |  57 +++++++--
+ pyproject.toml                         |   4 +-
+ tests/test_pipeline.py                 |   2 +-
+ tests/test_utterplan_integration.py    |  18 +++
+ tests/test_utterplan_v2_annotations.py | 215 +++++++++++++++++++++++++++++++++
+ 7 files changed, 388 insertions(+), 16 deletions(-)
+
+diff --git a/pipersynth/__init__.py b/pipersynth/__init__.py
+index 8fc12c6..75425d8 100644
+--- a/pipersynth/__init__.py
++++ b/pipersynth/__init__.py
+@@ -48,7 +48,7 @@ from .errors import (
+     VoiceNotFoundError,
+ )
+ from .loudness_config import LoudnessConfig, PeakPolicy, VoiceLevelingMode, coerce_loudness
+-from .pipeline import PiperPipeline, PreparedAudioUnits, build_pipeline
++from .pipeline import PiperPipeline, PreparedAudioSegments, PreparedAudioUnits, build_pipeline
+ from .preparation import IdentityTextPreparer, PreparedTextResult, SpokenformTextPreparer
+ from .session import ProviderConfig, available_providers
+ from .types import AudioChunk, AudioResult, AudioUnitDescriptor, AudioUnitResult, SynthesisConfig
+@@ -112,6 +112,7 @@ __all__ = [
+     "OfflineAssetError",
+     "PiperVoice",
+     "PipelineConfig",
++    "PreparedAudioSegments",
+     "PreparedAudioUnits",
+     "PreparedTextResult",
+     "ProviderConfig",
+diff --git a/pipersynth/pipeline.py b/pipersynth/pipeline.py
+index bc083bb..922f1c6 100644
+--- a/pipersynth/pipeline.py
++++ b/pipersynth/pipeline.py
+@@ -18,7 +18,12 @@ from utterplan import (
+ )
+
+ from .audio import silence_samples
+-from .audio_job import PiperAudioJobContext, build_audio_job_context, render_segment
++from .audio_job import (
++    PiperAudioJobContext,
++    RenderedPiperSegment,
++    build_audio_job_context,
++    render_segment,
++)
+ from .composition import audio_result_from_composition
+ from .config import GenerationConfig, PipelineConfig
+ from .diagnostics import TimingDiagnostics
+@@ -31,6 +36,84 @@ from .types import AudioResult, AudioUnitDescriptor, AudioUnitResult, SynthesisC
+ from .voice import PiperVoice
+
+
++class PreparedAudioSegments:
++    """Prepared Piper segments rendered without semantic pause padding or prosody."""
++
++    def __init__(
++        self,
++        pipeline: PiperPipeline,
++        plan: UtterancePlan,
++        prepared_units: tuple[PreparedPiperUnit, ...],
++    ) -> None:
++        self._pipeline = pipeline
++        self._plan = plan
++        self._prepared = {
++            segment.plan_segment_id: segment for unit in prepared_units for segment in unit.segments
++        }
++        self._segments = {segment.id: segment for segment in plan.segments}
++        self._closed = False
++        self._render_started = False
++
++    def _ensure_open(self) -> None:
++        if self._closed:
++            raise VoiceClosedError("PreparedAudioSegments is closed")
++
++    def render(
++        self,
++        *,
++        segment_ids: tuple[str, ...] | list[str] | None = None,
++    ) -> Iterator[RenderedPiperSegment]:
++        self._ensure_open()
++        if self._render_started:
++            raise RuntimeError("PreparedAudioSegments supports one render pass only")
++        requested = (
++            tuple(segment_ids)
++            if segment_ids is not None
++            else tuple(segment.id for segment in self._plan.segments)
++        )
++        if len(set(requested)) != len(requested):
++            raise ValueError("segment_ids contains duplicate segment IDs")
++        missing = [
++            segment_id
++            for segment_id in requested
++            if segment_id not in self._prepared or segment_id not in self._segments
++        ]
++        if missing:
++            raise KeyError(f"unknown plan segment ID {missing[0]!r}")
++        self._render_started = True
++        return self._iterate(requested)
++
++    def _iterate(self, segment_ids: tuple[str, ...]) -> Iterator[RenderedPiperSegment]:
++        try:
++            for segment_id in segment_ids:
++                prepared = self._prepared[segment_id]
++                segment = self._segments[segment_id]
++                rendered = render_segment(
++                    prepared,
++                    unit_id=segment_id,
++                    spoken_start=segment.spoken_start,
++                    spoken_end=segment.spoken_end,
++                    voice=self._pipeline.voice,
++                )
++                yield replace(
++                    rendered,
++                    pause_before_seconds=0.0,
++                    pause_after_seconds=0.0,
++                )
++        finally:
++            self._render_started = False
++
++    def close(self) -> None:
++        self._closed = True
++
++    def __enter__(self) -> PreparedAudioSegments:
++        self._ensure_open()
++        return self
++
++    def __exit__(self, *_: object) -> None:
++        self.close()
++
++
+ class PreparedAudioUnits:
+     """Plan-backed audio units rendered lazily by a reusable pipeline."""
+
+@@ -407,7 +490,13 @@ class PiperPipeline:
+             loudness=loudness or LoudnessConfig(),
+         )
+
+-    def prepare_plan(self, plan: UtterancePlan, **render_overrides: Any) -> PreparedAudioUnits:
++    def prepare_plan(
++        self,
++        plan: UtterancePlan,
++        *,
++        canonical: bool = False,
++        **render_overrides: Any,
++    ) -> PreparedAudioUnits:
+         self._ensure_open()
+         planner_fields = {
+             "language",
+@@ -440,6 +529,7 @@ class PiperPipeline:
+             loudness=effective.loudness,
+             directive_policy=effective.directive_policy,
+             language_policy=effective.language_policy,
++            canonical=canonical,
+             language_aliases=effective.language_aliases,
+         )
+         self._last_timing["g2p_ms"] = (time.perf_counter() - started) * 1000
+@@ -447,6 +537,17 @@ class PiperPipeline:
+         self._prepared.append(result)
+         return result
+
++    def prepare_plan_segments(
++        self,
++        plan: UtterancePlan,
++        **render_overrides: Any,
++    ) -> PreparedAudioSegments:
++        """Prepare canonical speech-only rendering for immutable plan segments."""
++        prepared_units = self.prepare_plan(plan, canonical=True, **render_overrides)
++        result = PreparedAudioSegments(self, plan, prepared_units._prepared_units)
++        prepared_units.close()
++        return result
++
+     def _build_audio_job_context(
+         self, plan: UtterancePlan, **render_overrides: Any
+     ) -> PiperAudioJobContext:
+diff --git a/pipersynth/plan_adapter.py b/pipersynth/plan_adapter.py
+index a0a6aac..67635eb 100644
+--- a/pipersynth/plan_adapter.py
++++ b/pipersynth/plan_adapter.py
+@@ -9,6 +9,7 @@ from utterplan import PlanSegment, UtterancePlan, normalize_language
+
+ from .config import GenerationConfig
+ from .errors import (
++    PlanRenderingError,
+     UnsupportedPlanDirectiveError,
+     UnsupportedPlanLanguageError,
+     VoiceBindingError,
+@@ -119,13 +120,14 @@ def _segment_synthesis(
+     generation: GenerationConfig,
+     loudness: LoudnessConfig,
+     directive_policy: str,
++    canonical: bool = False,
+ ) -> tuple[SynthesisConfig, list[str]]:
+     warnings: list[str] = []
+     speaker_id = _resolve_voice_speaker(plan, segment, voice, generation)
+     length_scale = generation.length_scale
+     volume = generation.volume
+     prosody = segment.directives.prosody
+-    if prosody is not None:
++    if not canonical and prosody is not None:
+         if prosody.rate is not None:
+             try:
+                 rate = _number(prosody.rate, name="prosody.rate")
+@@ -157,7 +159,7 @@ def _segment_synthesis(
+             )
+             if warning:
+                 warnings.append(warning)
+-    if segment.directives.emphasis is not None:
++    if not canonical and segment.directives.emphasis is not None:
+         warning = _policy_issue(directive_policy, "PiperSynth does not support emphasis directives")
+         if warning:
+             warnings.append(warning)
+@@ -185,17 +187,20 @@ def _token_annotations(plan: UtterancePlan, segment: PlanSegment) -> tuple[dict[
+     result = []
+     for index in segment.token_indices:
+         token = plan.tokens[index]
+-        if token.spoken_start < segment.spoken_start or token.spoken_end > segment.spoken_end:
++        start = max(token.spoken_start, segment.spoken_start)
++        end = min(token.spoken_end, segment.spoken_end)
++        if start >= end:
+             continue
+         result.append(
+             {
+-                "start": token.spoken_start - segment.spoken_start,
+-                "end": token.spoken_end - segment.spoken_start,
++                "start": start - segment.spoken_start,
++                "end": end - segment.spoken_start,
+                 "text": token.text,
+                 "pos": token.pos,
+                 "tag": token.tag,
+                 "lemma": token.lemma,
+                 "language": token.language,
++                "morph": token.morph,
+             }
+         )
+     return tuple(result)
+@@ -210,13 +215,35 @@ def _sentences(result: Any) -> tuple[Any, ...]:
+     return sentences
+
+
++def _linguistic_provenance(plan: UtterancePlan, segment: PlanSegment) -> tuple[dict[str, Any], ...]:
++    referenced_indices = set(segment.token_indices)
++    if not referenced_indices:
++        return ()
++    return tuple(
++        {
++            "language_run_id": run.language_run_id,
++            "provider": run.provider,
++            "model": run.model,
++            "provider_version": run.provider_version,
++            "model_version": run.model_version,
++            "token_range": (run.token_start, run.token_end),
++        }
++        for run in plan.linguistic_runs
++        if any(run.token_start <= index < run.token_end for index in referenced_indices)
++    )
++
++
+ def _phonemize(frontend: Any, text: str, annotations: tuple[dict[str, Any], ...]) -> Any:
++    if not annotations:
++        return frontend.phonemize_prepared(text)
+     parameters = inspect.signature(frontend.phonemize_prepared).parameters
+-    if "annotations" in parameters or any(
++    if "annotations" not in parameters and not any(
+         parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+     ):
+-        return frontend.phonemize_prepared(text, annotations=annotations)
+-    return frontend.phonemize_prepared(text)
++        raise PlanRenderingError(
++            "the active Piper frontend cannot accept Utterplan token annotations"
++        )
++    return frontend.phonemize_prepared(text, annotations=annotations)
+
+
+ def prepare_plan(
+@@ -228,6 +255,7 @@ def prepare_plan(
+     directive_policy: Literal["error", "warn", "ignore"] = "error",
+     language_policy: Literal["strict", "allow"] = "strict",
+     language_aliases: Mapping[str, str] | None = None,
++    canonical: bool = False,
+ ) -> tuple[PreparedPiperUnit, ...]:
+     """Adapt a validated semantic plan into renderer-local Piper records."""
+
+@@ -246,7 +274,13 @@ def prepare_plan(
+                 else normalize_language(segment.language, aliases)
+             )
+             synthesis, directive_warnings = _segment_synthesis(
+-                plan, segment, voice, generation, effective_loudness, directive_policy
++                plan,
++                segment,
++                voice,
++                generation,
++                effective_loudness,
++                directive_policy,
++                canonical=canonical,
+             )
+             pronunciation = segment.directives.pronunciation
+             if pronunciation is not None and pronunciation.alphabet not in {"ipa", "espeak-ipa3"}:
+@@ -279,7 +313,10 @@ def prepare_plan(
+                     pause_before_seconds=segment.pause_before.seconds,
+                     pause_after_seconds=segment.pause_after.seconds,
+                     warnings=warnings,
+-                    metadata={"frontend_diagnostics": getattr(result, "diagnostics", None)},
++                    metadata={
++                        "frontend_diagnostics": getattr(result, "diagnostics", None),
++                        "utterplan_linguistics": _linguistic_provenance(plan, segment),
++                    },
+                     synthesis=synthesis,
+                 )
+             )
+diff --git a/pyproject.toml b/pyproject.toml
+index b213a41..b58350d 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -12,8 +12,8 @@ license = {text = "Apache-2.0"}
+ authors = [{name = "PiperSynth contributors"}]
+ dependencies = [
+   "numpy>=1.23",
+-  "utterplan>=0.1,<0.2",
+-  "piperg2p",
++  "utterplan>=0.2.0,<0.3",
++  "piperg2p>=0.1.6,<0.2",
+   "onnxvoice>=0.1,<0.2",
+   "audiocompose>=0.1,<0.2",
+   "audiosig>=0.1.4,<0.2",
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d247f6d..76edfeb 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -11,7 +11,7 @@ from pipersynth.pipeline import PiperPipeline
+
+
+ class FakeFrontend:
+-    def phonemize_prepared(self, text):
++    def phonemize_prepared(self, text, *, annotations=None):
+         sentences = tuple(PhonemeSentence(tuple(part), (1, 2)) for part in text.split("|") if part)
+         return PhonemizeResult(text, sentences)
+
+diff --git a/tests/test_utterplan_integration.py b/tests/test_utterplan_integration.py
+index ce0af86..4e2e8dd 100644
+--- a/tests/test_utterplan_integration.py
++++ b/tests/test_utterplan_integration.py
+@@ -194,3 +194,21 @@ def test_render_plan_rejects_malformed_plan() -> None:
+     with pytest.raises(PlanValidationError):
+         pipeline.render_plan(malformed)
+     pipeline.close()
++
++
++def test_canonical_plan_segments_omit_semantic_pauses():
++    pipeline, _voice = make_pipeline()
++    plan = pipeline.plan(
++        "One. Two.",
++        unit="sentence",
++        pauses=PauseConfig(mode="manual", sentence=0.2),
++    )
++
++    with pipeline.prepare_plan_segments(plan) as prepared:
++        rendered = list(prepared.render())
++
++    assert [item.segment_id for item in rendered] == [segment.id for segment in plan.segments]
++    assert all(item.pause_before_seconds == 0.0 for item in rendered)
++    assert all(item.pause_after_seconds == 0.0 for item in rendered)
++    assert all(item.audio.size > 0 for item in rendered)
++    pipeline.close()
+diff --git a/tests/test_utterplan_v2_annotations.py b/tests/test_utterplan_v2_annotations.py
+new file mode 100644
+index 0000000..cff9ee2
+--- /dev/null
++++ b/tests/test_utterplan_v2_annotations.py
+@@ -0,0 +1,215 @@
++from __future__ import annotations
++
++from dataclasses import replace
++from typing import Any
++
++import pytest
++from piperg2p import PhonemeSentence, PhonemizeResult, VoiceConfig
++from utterplan import UtterancePlan
++from utterplan.units import make_units
++
++from pipersynth.config import GenerationConfig, PipelineConfig
++from pipersynth.errors import PlanRenderingError
++from pipersynth.pipeline import PiperPipeline
++from pipersynth.plan_adapter import prepare_plan
++
++
++class AnnotationFrontend:
++    def __init__(self) -> None:
++        self.calls: list[tuple[str, object]] = []
++
++    def phonemize_prepared(self, text: str, *, annotations=None) -> PhonemizeResult:
++        self.calls.append((text, annotations))
++        values = tuple(annotations or ())
++        tag = values[0].get("tag") if values else None
++        phoneme = "V" if tag == "VBP" else "A" if tag == "JJ" else "x"
++        identifier = 1 if phoneme == "V" else 2 if phoneme == "A" else 3
++        sentence = PhonemeSentence((phoneme,), (identifier,))
++        return PhonemizeResult(clean_text=text, sentences=(sentence,))
++
++
++class NoAnnotationFrontend:
++    def __init__(self) -> None:
++        self.calls: list[str] = []
++
++    def phonemize_prepared(self, text: str) -> PhonemizeResult:
++        self.calls.append(text)
++        sentence = PhonemeSentence(("x",), (1,))
++        return PhonemizeResult(clean_text=text, sentences=(sentence,))
++
++
++class FakeVoice:
++    def __init__(self, frontend: Any) -> None:
++        self.config = VoiceConfig.from_dict(
++            {
++                "num_symbols": 4,
++                "num_speakers": 1,
++                "audio": {"sample_rate": 10},
++                "phoneme_type": "text",
++                "phoneme_id_map": {"x": [0], "V": [1], "A": [2], "_": [3]},
++                "espeak_voice": "en-us",
++            }
++        )
++        self.frontend = frontend
++
++    def resolve_speaker_id(self, value):
++        assert value is None or value == 0
++        return None
++
++
++def make_plan(
++    text: str,
++    *,
++    document_format: str = "plain",
++    text_preparation: str = "identity",
++) -> UtterancePlan:
++    pipeline = PiperPipeline(
++        PipelineConfig(
++            "voice.onnx",
++            language="en-us",
++            document_format=document_format,
++            text_preparation=text_preparation,
++        )
++    )
++    try:
++        return pipeline.plan(text)
++    finally:
++        pipeline.close()
++
++
++def replace_tokens(plan: UtterancePlan, **changes: object) -> UtterancePlan:
++    tokens = tuple(replace(token, **changes) for token in plan.tokens)
++    units = make_units(plan.segments, plan.markers, tokens, plan.units[0].kind)
++    return replace(plan, tokens=tokens, units=units).with_identity()
++
++
++def replace_plan_layout(plan: UtterancePlan, *, segments=None, tokens=None) -> UtterancePlan:
++    resolved_segments = tuple(segments or plan.segments)
++    resolved_tokens = tuple(tokens or plan.tokens)
++    units = make_units(resolved_segments, plan.markers, resolved_tokens, plan.units[0].kind)
++    return replace(
++        plan, segments=resolved_segments, tokens=resolved_tokens, units=units
++    ).with_identity()
++
++
++def render(plan: UtterancePlan, frontend: Any):
++    return prepare_plan(plan, FakeVoice(frontend), GenerationConfig())
++
++
++def test_v2_annotations_forward_all_fields_and_provenance() -> None:
++    plan = replace_tokens(
++        make_plan("live"),
++        pos="VERB",
++        tag="VBP",
++        lemma="live",
++        language="en-us",
++        morph="Tense=Pres|VerbForm=Fin",
++    )
++    frontend = AnnotationFrontend()
++    original_tokens = plan.tokens
++    original_runs = plan.linguistic_runs
++    original_membership = tuple(segment.token_indices for segment in plan.segments)
++
++    prepared = render(plan, frontend)
++
++    assert frontend.calls == [
++        (
++            "live",
++            (
++                {
++                    "start": 0,
++                    "end": 4,
++                    "text": "live",
++                    "pos": "VERB",
++                    "tag": "VBP",
++                    "lemma": "live",
++                    "language": "en-us",
++                    "morph": "Tense=Pres|VerbForm=Fin",
++                },
++            ),
++        )
++    ]
++    assert prepared[0].segments[0].metadata["utterplan_linguistics"] == (
++        {
++            "language_run_id": "lang-0",
++            "provider": "fallback",
++            "model": None,
++            "provider_version": None,
++            "model_version": None,
++            "token_range": (0, 1),
++        },
++    )
++    assert plan.tokens == original_tokens
++    assert plan.linguistic_runs == original_runs
++    assert tuple(segment.token_indices for segment in plan.segments) == original_membership
++
++
++def test_grammatical_annotations_select_distinct_prepared_phonemes() -> None:
++    verb_plan = replace_tokens(
++        make_plan("I live here."),
++        pos="VERB",
++        tag="VBP",
++        morph="Tense=Pres|VerbForm=Fin",
++    )
++    adjective_plan = replace_tokens(
++        make_plan("a live show"),
++        pos="ADJ",
++        tag="JJ",
++        morph="Degree=Pos",
++    )
++    verb_frontend = AnnotationFrontend()
++    adjective_frontend = AnnotationFrontend()
++
++    verb_prepared = render(verb_plan, verb_frontend)
++    adjective_prepared = render(adjective_plan, adjective_frontend)
++
++    assert verb_prepared[0].segments[0].phonemes == ("V",)
++    assert adjective_prepared[0].segments[0].phonemes == ("A",)
++    assert verb_prepared[0].segments[0].phoneme_ids != adjective_prepared[0].segments[0].phoneme_ids
++
++
++def test_incompatible_frontend_cannot_drop_non_empty_annotations() -> None:
++    plan = replace_tokens(make_plan("live"), tag="VBP")
++
++    with pytest.raises(PlanRenderingError, match="cannot accept Utterplan token annotations"):
++        render(plan, NoAnnotationFrontend())
++
++
++def test_annotation_free_segment_uses_annotation_free_frontend_path() -> None:
++    plan = make_plan("live")
++    segment = replace(plan.segments[0], token_indices=())
++    plan = replace_plan_layout(plan, segments=(segment,))
++    frontend = NoAnnotationFrontend()
++
++    render(plan, frontend)
++
++    assert frontend.calls == ["live"]
++
++
++def test_cross_boundary_token_coordinates_are_clipped() -> None:
++    plan = make_plan("abcd")
++    segment = replace(plan.segments[0], text="bc", spoken_start=1, spoken_end=3)
++    plan = replace_plan_layout(plan, segments=(segment,))
++    frontend = AnnotationFrontend()
++
++    render(plan, frontend)
++
++    annotation = frontend.calls[0][1][0]
++    assert annotation["start"] == 0
++    assert annotation["end"] == 2
++
++
++def test_explicit_pronunciation_remains_authoritative() -> None:
++    plan = replace_tokens(
++        make_plan(
++            '[tomato]{ph="təˈmeɪtoʊ"}', document_format="ssmd", text_preparation="spokenform"
++        ),
++        pos="NOUN",
++        tag="NN",
++        morph="Number=Sing",
++    )
++    frontend = AnnotationFrontend()
++
++    render(plan, frontend)
++
++    assert frontend.calls == [("[[təˈmeɪtoʊ]]", None)]

@@ -1,0 +1,2122 @@
+ .gitignore                                         |   1 +
+ README.md                                          |  22 +
+ .../data/voice_loudness_count_fallbacks.json       |  10 +
+ benchmarks/data/voice_loudness_policy.json         |  11 +
+ benchmarks/voice_loudness.py                       | 518 +++++++++++++++++++++
+ benchmarks/voice_loudness_calibration.py           | 222 +++++++++
+ docs/architecture.md                               |  23 +
+ pipersynth/__init__.py                             |  23 +
+ pipersynth/audio.py                                |  29 +-
+ pipersynth/audio_job.py                            |  35 +-
+ pipersynth/config.py                               |   4 +
+ pipersynth/data/voice_level_calibration.json       |  13 +
+ pipersynth/loudness_config.py                      |  56 +++
+ pipersynth/pipeline.py                             |  80 +++-
+ pipersynth/plan_adapter.py                         |   7 +-
+ pipersynth/types.py                                |   5 +
+ pipersynth/voice.py                                |  84 +++-
+ pipersynth/voice_level.py                          | 243 ++++++++++
+ pyproject.toml                                     |   5 +-
+ tests/test_voice_leveling.py                       | 136 ++++++
+ tests/test_voice_loudness_benchmark.py             |  64 +++
+ tests/test_voice_loudness_calibration.py           |  53 +++
+ 22 files changed, 1609 insertions(+), 35 deletions(-)
+
+diff --git a/.gitignore b/.gitignore
+index aae70d3..c4c475a 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -12,6 +12,7 @@ build/
+ develop-eggs/
+ dist/
+ downloads/
++benchmarks/output/
+ eggs/
+ .eggs/
+ lib/
+diff --git a/README.md b/README.md
+index 30c65ed..c2bbfd2 100644
+--- a/README.md
++++ b/README.md
+@@ -98,6 +98,28 @@ with PiperPipeline(PipelineConfig(model_path="voice.onnx")) as pipe:
+
+ `PiperVoice.load()` and `PiperPipeline(PipelineConfig(...))` never resolve the catalog or download assets. Use `PiperVoice.from_pretrained()` or `PiperPipeline.from_pretrained()` when managed catalog resources are desired.
+
++## Calibrated voice leveling
++
++PiperSynth can apply a fixed, offline-measured gain for an exact managed Piper catalog voice, quality, and numeric speaker identity:
++
++```python
++from pipersynth import LoudnessConfig, PiperPipeline
++
++with PiperPipeline.from_pretrained(
++    "en_US-lessac-medium",
++    loudness=LoudnessConfig(voice_leveling="calibrated"),
++) as pipe:
++    result = pipe.run("Hello from PiperSynth.")
++```
++
++Calibrated voice leveling is not dynamic normalization: synthesis never measures LUFS and the gain does not guarantee a final LUFS value for arbitrary text. It is applied after legacy peak normalization, before user or SSMD volume, and before the final clamp. `voice_gain_db` is an explicit gain override and works for managed and local voices.
++
++Calibration keys are canonical `piper:model-id:quality:speaker-N` identities. Every speaker in a multi-speaker catalog model is measured independently; single-speaker models use `speaker-0`. Anonymous local models have no guessed catalog key, and missing records are safe no-ops with diagnostic metadata.
++
++Complete-output normalization remains separate. Set `target_lufs` in `LoudnessConfig` only for batch composition; true streaming APIs reject it rather than normalizing each unit independently.
++
++The packaged catalog is generated from corpus `pipersynth-count-1-to-10-v1` at reference `-24 LUFS` with a `-1 dBTP` calibration ceiling. To regenerate it, run the full unfiltered benchmark, review `summary.md`, then promote its report with `benchmarks/voice_loudness_calibration.py`. Benchmark output is written below `benchmarks/output/` and never overwrites production data automatically.
++
+ ## Voice discovery and cache
+
+ ```python
+diff --git a/benchmarks/data/voice_loudness_count_fallbacks.json b/benchmarks/data/voice_loudness_count_fallbacks.json
+new file mode 100644
+index 0000000..c24d387
+--- /dev/null
++++ b/benchmarks/data/voice_loudness_count_fallbacks.json
+@@ -0,0 +1,10 @@
++{
++  "schema": 1,
++  "stimulus": "count-1-to-10",
++  "locales": {
++    "hi": {
++      "text": "एक, दो, तीन, चार, पाँच, छह, सात, आठ, नौ, दस.",
++      "reason": "spokenform-plain-cardinals-not-owned"
++    }
++  }
++}
+diff --git a/benchmarks/data/voice_loudness_policy.json b/benchmarks/data/voice_loudness_policy.json
+new file mode 100644
+index 0000000..627572f
+--- /dev/null
++++ b/benchmarks/data/voice_loudness_policy.json
+@@ -0,0 +1,11 @@
++{
++  "schema": 2,
++  "name": "pipersynth-count-1-to-10-v1",
++  "stimulus": { "kind": "count", "first": 1, "last": 10 },
++  "repeats": 3,
++  "reference_lufs": -24.0,
++  "calibration_peak_ceiling_dbtp": -1.0,
++  "max_boost_db": 8.0,
++  "max_attenuation_db": 12.0,
++  "max_mad_lu": 0.75
++}
+diff --git a/benchmarks/voice_loudness.py b/benchmarks/voice_loudness.py
+new file mode 100644
+index 0000000..6718a54
+--- /dev/null
++++ b/benchmarks/voice_loudness.py
+@@ -0,0 +1,518 @@
++#!/usr/bin/env python3
++"""Measure Piper catalog voices for offline, identity-specific leveling."""
++
++from __future__ import annotations
++
++import argparse
++import csv
++import json
++import math
++import statistics
++from collections.abc import Mapping, Sequence
++from dataclasses import asdict, dataclass
++from importlib.metadata import PackageNotFoundError, version
++from pathlib import Path
++from typing import Any
++
++import numpy as np
++from audiosig import measure_loudness
++
++from pipersynth import GenerationConfig, LoudnessConfig, PiperPipeline, VoiceAssetManager
++from pipersynth.assets import VoiceMetadata
++from pipersynth.voice_level import VoiceCalibrationKey
++
++POLICY_PATH = Path(__file__).with_name("data") / "voice_loudness_policy.json"
++FALLBACKS_PATH = Path(__file__).with_name("data") / "voice_loudness_count_fallbacks.json"
++COUNT_SOURCE = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10."
++COUNT_VALUES = tuple(range(1, 11))
++DEFAULT_OUTPUT = Path("benchmarks/output/voice_loudness")
++
++
++class StimulusResolutionError(ValueError):
++    """Raised when a locale has no safe spoken count stimulus."""
++
++
++@dataclass(frozen=True, slots=True)
++class LoudnessStimulus:
++    locale: str
++    normalized_language: str
++    source: str
++    spoken_text: str
++    generator: str
++    fallback_used: bool
++
++
++@dataclass(frozen=True, slots=True)
++class BenchmarkPolicy:
++    schema: int
++    name: str
++    first: int
++    last: int
++    repeats: int
++    reference_lufs: float
++    calibration_peak_ceiling_dbtp: float
++    max_boost_db: float
++    max_attenuation_db: float
++    max_mad_lu: float
++
++
++def load_policy(path: Path = POLICY_PATH) -> BenchmarkPolicy:
++    data = json.loads(path.read_text(encoding="utf-8"))
++    stimulus = data.get("stimulus", {})
++    policy = BenchmarkPolicy(
++        schema=int(data.get("schema", 0)),
++        name=str(data.get("name", "")),
++        first=int(stimulus.get("first", 0)),
++        last=int(stimulus.get("last", 0)),
++        repeats=int(data.get("repeats", 0)),
++        reference_lufs=float(data["reference_lufs"]),
++        calibration_peak_ceiling_dbtp=float(data["calibration_peak_ceiling_dbtp"]),
++        max_boost_db=float(data["max_boost_db"]),
++        max_attenuation_db=float(data["max_attenuation_db"]),
++        max_mad_lu=float(data["max_mad_lu"]),
++    )
++    if policy.schema != 2 or not policy.name or (policy.first, policy.last) != (1, 10):
++        raise ValueError("voice loudness policy must define schema 2 count stimulus 1 through 10")
++    if policy.repeats < 1 or policy.max_mad_lu < 0:
++        raise ValueError("voice loudness policy has invalid repeats or MAD threshold")
++    return policy
++
++
++def load_fallbacks(path: Path = FALLBACKS_PATH) -> dict[str, dict[str, Any]]:
++    data = json.loads(path.read_text(encoding="utf-8"))
++    if data.get("schema") != 1 or data.get("stimulus") != "count-1-to-10":
++        raise ValueError("count fallback data has an invalid schema or stimulus")
++    locales = data.get("locales")
++    if not isinstance(locales, dict):
++        raise ValueError("count fallback locales must be an object")
++    return locales
++
++
++def _package_version(name: str) -> str:
++    try:
++        return version(name)
++    except PackageNotFoundError:
++        return "unknown"
++
++
++def generated_with() -> dict[str, str]:
++    return {
++        "pipersynth": _package_version("pipersynth"),
++        "audiosig": _package_version("audiosig"),
++        "onnxvoice": _package_version("onnxvoice"),
++        "utterplan": _package_version("utterplan"),
++    }
++
++
++def _spoken_count_words(locale: str) -> tuple[str, ...]:
++    try:
++        from spokenform import normalize_language, normalize_numbers
++    except ImportError as exc:
++        raise StimulusResolutionError("spokenform is unavailable") from exc
++    language = normalize_language(locale)
++    words = tuple(normalize_numbers(str(value), language=language) for value in COUNT_VALUES)
++    if any(not word.strip() or any(character.isdigit() for character in word) for word in words):
++        raise StimulusResolutionError(f"spokenform produced unresolved digits for {locale!r}")
++    return words
++
++
++def resolve_count_stimulus(
++    locale: str, fallbacks: dict[str, dict[str, Any]] | None = None
++) -> LoudnessStimulus:
++    """Resolve spoken cardinal words, using only a reviewed locale fallback."""
++
++    fallbacks = load_fallbacks() if fallbacks is None else fallbacks
++    try:
++        words = _spoken_count_words(locale)
++        normalized = locale.replace("-", "_").lower()
++        return LoudnessStimulus(
++            locale=locale,
++            normalized_language=normalized,
++            source=COUNT_SOURCE,
++            spoken_text=", ".join(words) + ".",
++            generator="spokenform",
++            fallback_used=False,
++        )
++    except Exception as error:
++        normalized = locale.replace("-", "_").lower()
++        base = normalized.split("_", 1)[0]
++        fallback = fallbacks.get(locale) or fallbacks.get(normalized) or fallbacks.get(base)
++        if not isinstance(fallback, Mapping) or not isinstance(fallback.get("text"), str):
++            raise StimulusResolutionError(f"no reviewed count fallback for {locale!r}") from error
++        text = fallback["text"]
++        if any(character.isdigit() for character in text):
++            raise StimulusResolutionError(f"fallback for {locale!r} contains digits") from None
++        return LoudnessStimulus(
++            locale=locale,
++            normalized_language=normalized,
++            source=COUNT_SOURCE,
++            spoken_text=text,
++            generator="fallback",
++            fallback_used=True,
++        )
++
++
++def expand_speaker_ids(metadata: VoiceMetadata) -> tuple[int, ...]:
++    return tuple(range(max(1, metadata.num_speakers)))
++
++
++def inventory_entries(
++    voices: Sequence[VoiceMetadata],
++    *,
++    voice: str | None = None,
++    language: str | None = None,
++    locale: str | None = None,
++    quality: str | None = None,
++    speaker: int | None = None,
++    max_voices: int | None = None,
++) -> list[dict[str, Any]]:
++    """Expand catalog metadata into one exact identity per catalog speaker."""
++
++    selected = list(voices)
++    if voice is not None:
++        selected = [item for item in selected if item.id == voice or voice in item.aliases]
++    if language is not None:
++        selected = [item for item in selected if item.language_code == language]
++    if locale is not None:
++        selected = [item for item in selected if item.language_code == locale]
++    if quality is not None:
++        selected = [item for item in selected if item.quality == quality]
++    if max_voices is not None:
++        selected = selected[:max_voices]
++    entries: list[dict[str, Any]] = []
++    for metadata in sorted(selected, key=lambda item: item.id):
++        ids = expand_speaker_ids(metadata)
++        if speaker is not None:
++            ids = tuple(item for item in ids if item == speaker)
++        names = {identifier: name for name, identifier in metadata.speaker_id_map.items()}
++        for speaker_id in ids:
++            key = VoiceCalibrationKey(
++                "piper", metadata.id, metadata.quality, f"speaker-{speaker_id}"
++            )
++            entries.append(
++                {
++                    "model_source": "piper",
++                    "model_id": metadata.id,
++                    "quality": metadata.quality,
++                    "speaker_id": speaker_id,
++                    "speaker_name": names.get(speaker_id),
++                    "calibration_key": str(key),
++                    "locale": metadata.language_code,
++                    "language": metadata.language_code,
++                    "source_revision": metadata.source_revision,
++                    "num_speakers": metadata.num_speakers,
++                }
++            )
++    return entries
++
++
++def _rms_dbfs(audio: np.ndarray) -> float:
++    rms = float(np.sqrt(np.mean(np.square(audio.astype(np.float64))))) if audio.size else 0.0
++    return -math.inf if rms == 0 else 20 * math.log10(rms)
++
++
++def measure_repeats(
++    entry: Mapping[str, Any],
++    *,
++    cache_dir: str | Path | None = None,
++    offline: bool = False,
++    repeats: int = 3,
++    refresh_catalog: bool = False,
++    stimulus: LoudnessStimulus | None = None,
++) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
++    """Measure one catalog voice/speaker repeatedly with leveling disabled."""
++
++    stimulus = stimulus or resolve_count_stimulus(str(entry["locale"]))
++    measurements: list[dict[str, Any]] = []
++    failures: list[dict[str, Any]] = []
++    pipeline: PiperPipeline | None = None
++    try:
++        pipeline = PiperPipeline.from_pretrained(
++            str(entry["model_id"]),
++            cache_dir=cache_dir,
++            offline=offline,
++            refresh_catalog=refresh_catalog,
++            generation=GenerationConfig(
++                speaker=int(entry["speaker_id"]), normalize_audio=True, volume=1.0
++            ),
++            loudness=LoudnessConfig(voice_leveling="off", target_lufs=None),
++            language=str(entry["locale"]),
++        )
++        for repeat in range(repeats):
++            try:
++                result = pipeline.run(stimulus.spoken_text)
++                audio = np.asarray(result.audio, dtype=np.float32).reshape(-1)
++                metrics = measure_loudness(audio, sample_rate=result.sample_rate)
++                measurements.append(
++                    {
++                        **dict(entry),
++                        "repeat": repeat,
++                        "stimulus": stimulus.spoken_text,
++                        "stimulus_generator": stimulus.generator,
++                        "sample_rate": result.sample_rate,
++                        "integrated_lufs": float(metrics.integrated_lufs),
++                        "sample_peak_dbfs": float(metrics.sample_peak_dbfs),
++                        "true_peak_dbtp": float(metrics.true_peak_dbtp),
++                        "rms_dbfs": _rms_dbfs(audio),
++                        "duration_seconds": audio.size / result.sample_rate,
++                        "pipersynth_version": _package_version("pipersynth"),
++                        "audiosig_version": _package_version("audiosig"),
++                        "onnxvoice_version": _package_version("onnxvoice"),
++                        "utterplan_version": _package_version("utterplan"),
++                    }
++                )
++            except Exception as exc:
++                failures.append({**dict(entry), "repeat": repeat, "error": str(exc)})
++    finally:
++        if pipeline is not None:
++            pipeline.close()
++    return measurements, failures
++
++
++def aggregate_measurements(
++    measurements: Sequence[Mapping[str, Any]], *, repeats: int = 3, max_mad_lu: float = 0.75
++) -> list[dict[str, Any]]:
++    grouped: dict[str, list[Mapping[str, Any]]] = {}
++    for item in measurements:
++        grouped.setdefault(str(item["calibration_key"]), []).append(item)
++    rows: list[dict[str, Any]] = []
++    for key, items in sorted(grouped.items()):
++        values = [float(item["integrated_lufs"]) for item in items]
++        finite = [value for value in values if math.isfinite(value)]
++        if not finite:
++            median_lufs = mad_lu = None
++            status = "non_finite_loudness"
++        else:
++            median_lufs = statistics.median(finite)
++            mad_lu = statistics.median(abs(value - median_lufs) for value in finite)
++            status = "eligible"
++            if len(finite) != len(values):
++                status = "non_finite_loudness"
++            elif len(finite) != repeats:
++                status = "insufficient_repeats"
++            elif mad_lu > max_mad_lu:
++                status = "high_variability"
++        peaks = [float(item["true_peak_dbtp"]) for item in items]
++        rows.append(
++            {
++                "model_source": items[0]["model_source"],
++                "model_id": items[0]["model_id"],
++                "quality": items[0]["quality"],
++                "speaker_id": items[0]["speaker_id"],
++                "speaker_name": items[0].get("speaker_name"),
++                "calibration_key": key,
++                "locale": items[0]["locale"],
++                "samples": len(items),
++                "repeat_count": len(items),
++                "median_lufs": median_lufs,
++                "mad_lu": mad_lu,
++                "max_true_peak_dbtp": max(peaks) if peaks else math.nan,
++                "status": status,
++            }
++        )
++    return rows
++
++
++def calibration_candidate(
++    aggregate: Mapping[str, Any],
++    *,
++    reference_lufs: float = -24.0,
++    peak_ceiling_dbtp: float = -1.0,
++    max_boost_db: float = 8.0,
++    max_attenuation_db: float = 12.0,
++) -> dict[str, Any]:
++    measured = float(aggregate["median_lufs"])
++    if str(aggregate["status"]) == "non_finite_loudness":
++        return {**dict(aggregate), "status": "non_finite_loudness"}
++    max_peak = float(aggregate["max_true_peak_dbtp"])
++    requested = reference_lufs - measured
++    safe = peak_ceiling_dbtp - max_peak
++    gain = min(requested, safe) if requested > 0 else requested
++    status = str(aggregate["status"])
++    limited = gain < requested
++    if status == "eligible":
++        if limited:
++            status = "headroom_limited"
++        elif requested > max_boost_db:
++            status = "review_large_boost"
++        elif requested < -max_attenuation_db:
++            status = "review_large_attenuation"
++    return {
++        **dict(aggregate),
++        "measured_lufs": measured,
++        "reference_lufs": reference_lufs,
++        "requested_gain_db": requested,
++        "gain_db": gain,
++        "max_safe_gain_db": safe,
++        "projected_true_peak_dbtp": max_peak + gain,
++        "headroom_limited": limited,
++        "target_reached": not limited,
++        "status": status,
++    }
++
++
++def coverage_report(
++    entries: Sequence[Mapping[str, Any]],
++    aggregates: Sequence[Mapping[str, Any]],
++    failures: Sequence[Mapping[str, Any]],
++    *,
++    repeats: int,
++) -> dict[str, Any]:
++    expected = {str(item["calibration_key"]) for item in entries}
++    measured = {
++        str(item["calibration_key"]) for item in aggregates if item.get("repeat_count") == repeats
++    }
++    failed = {str(item["calibration_key"]) for item in failures}
++    failed.update(
++        str(item["calibration_key"])
++        for item in aggregates
++        if item.get("status") in {"non_finite_loudness", "insufficient_repeats"}
++    )
++    failed_expected = failed & expected
++    return {
++        "catalog_identities_expected": len(expected),
++        "catalog_identities_measured": len(measured),
++        "catalog_identities_failed": len(expected - measured) + len(failed_expected),
++        "complete": expected == measured and not failed_expected,
++    }
++
++
++def build_report(
++    entries: Sequence[Mapping[str, Any]],
++    measurements: Sequence[Mapping[str, Any]],
++    failures: Sequence[Mapping[str, Any]],
++    policy: BenchmarkPolicy,
++) -> dict[str, Any]:
++    aggregates = aggregate_measurements(
++        measurements, repeats=policy.repeats, max_mad_lu=policy.max_mad_lu
++    )
++    candidates = [
++        calibration_candidate(
++            row,
++            reference_lufs=policy.reference_lufs,
++            peak_ceiling_dbtp=policy.calibration_peak_ceiling_dbtp,
++            max_boost_db=policy.max_boost_db,
++            max_attenuation_db=policy.max_attenuation_db,
++        )
++        for row in aggregates
++    ]
++    return {
++        "schema": 2,
++        "corpus": policy.name,
++        "generated_with": generated_with(),
++        "policy": asdict(policy),
++        "inventory": list(entries),
++        "measurements": list(measurements),
++        "aggregates": candidates,
++        "failures": list(failures),
++        "coverage": coverage_report(entries, aggregates, failures, repeats=policy.repeats),
++    }
++
++
++def write_outputs(
++    report: Mapping[str, Any], output: Path, *, candidate_path: Path | None = None
++) -> bool:
++    output.mkdir(parents=True, exist_ok=True)
++    (output / "measurements.json").write_text(
++        json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
++    )
++    with (output / "measurements.csv").open("w", newline="", encoding="utf-8") as handle:
++        rows = report.get("measurements", [])
++        fieldnames = sorted({key for row in rows if isinstance(row, Mapping) for key in row})
++        if fieldnames:
++            writer = csv.DictWriter(handle, fieldnames=fieldnames)
++            writer.writeheader()
++            writer.writerows(rows)
++    (output / "failures.json").write_text(
++        json.dumps(report["failures"], indent=2, sort_keys=True) + "\n", encoding="utf-8"
++    )
++    coverage = report["coverage"]
++    (output / "summary.md").write_text(
++        "# PiperSynth voice loudness benchmark\n\n"
++        f"- Expected identities: {coverage['catalog_identities_expected']}\n"
++        f"- Measured identities: {coverage['catalog_identities_measured']}\n"
++        f"- Failed identities: {coverage['catalog_identities_failed']}\n"
++        f"- Complete coverage: {coverage['complete']}\n",
++        encoding="utf-8",
++    )
++    if candidate_path is not None:
++        if not coverage["complete"]:
++            return False
++        candidate_path.parent.mkdir(parents=True, exist_ok=True)
++        candidate_path.write_text(
++            json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
++        )
++    return True
++
++
++_load_policy = load_policy
++_load_fallbacks = load_fallbacks
++_entries = inventory_entries
++_aggregate = aggregate_measurements
++_calibration_candidate = calibration_candidate
++_coverage = coverage_report
++
++
++def main(argv: Sequence[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--voice")
++    parser.add_argument("--language")
++    parser.add_argument("--locale")
++    parser.add_argument("--quality")
++    parser.add_argument("--speaker", type=int)
++    parser.add_argument("--max-voices", type=int)
++    parser.add_argument("--offline", action="store_true")
++    parser.add_argument("--cache-dir")
++    parser.add_argument("--refresh-catalog", action="store_true")
++    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
++    parser.add_argument("--repeats", type=int, default=None)
++    parser.add_argument("--list-stimuli", action="store_true")
++    parser.add_argument("--allow-failures", action="store_true")
++    parser.add_argument("--write-calibration-candidate", type=Path)
++    args = parser.parse_args(argv)
++    policy = load_policy()
++    if args.repeats is not None:
++        policy = BenchmarkPolicy(**{**asdict(policy), "repeats": args.repeats})
++    manager = VoiceAssetManager(args.cache_dir, offline=args.offline)
++    voices = manager.list_voices(refresh=args.refresh_catalog)
++    entries = inventory_entries(
++        voices,
++        voice=args.voice,
++        language=args.language,
++        locale=args.locale,
++        quality=args.quality,
++        speaker=args.speaker,
++        max_voices=args.max_voices,
++    )
++    print(f"Catalog cache: {manager.cache_info().directory}")
++    print(f"Catalog voices: {len(voices)}; expanded identities: {len(entries)}")
++    if args.list_stimuli:
++        for locale in sorted({str(entry["locale"]) for entry in entries}):
++            try:
++                print(json.dumps(asdict(resolve_count_stimulus(locale)), ensure_ascii=False))
++            except StimulusResolutionError as error:
++                print(f"{locale}: unsupported_stimulus ({error})")
++        return 0
++    measurements: list[dict[str, Any]] = []
++    failures: list[dict[str, Any]] = []
++    for index, entry in enumerate(entries, 1):
++        print(f"[{index}/{len(entries)}] {entry['calibration_key']}")
++        measured, failed = measure_repeats(
++            entry,
++            cache_dir=args.cache_dir,
++            offline=args.offline,
++            repeats=policy.repeats,
++            refresh_catalog=False,
++        )
++        measurements.extend(measured)
++        failures.extend(failed)
++    report = build_report(entries, measurements, failures, policy)
++    complete = write_outputs(report, args.output, candidate_path=args.write_calibration_candidate)
++    if args.write_calibration_candidate and not complete:
++        print("Incomplete catalog coverage; production candidate suppressed.")
++        return 0 if args.allow_failures else 2
++    return 0 if complete or args.allow_failures else 2
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/benchmarks/voice_loudness_calibration.py b/benchmarks/voice_loudness_calibration.py
+new file mode 100644
+index 0000000..26d89fc
+--- /dev/null
++++ b/benchmarks/voice_loudness_calibration.py
+@@ -0,0 +1,222 @@
++#!/usr/bin/env python3
++"""Promote a reviewed Piper voice loudness report into runtime data."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import math
++from collections.abc import Mapping, Sequence
++from pathlib import Path
++from typing import Any
++
++from pipersynth.voice_level import VoiceCalibrationKey
++
++PRODUCTION_CALIBRATION_PATH = (
++    Path(__file__).resolve().parents[1] / "pipersynth" / "data" / "voice_level_calibration.json"
++)
++REVIEWED_STATUSES = frozenset({"eligible"})
++_RUNTIME_FIELDS = {
++    "gain_db",
++    "measured_lufs",
++    "reference_lufs",
++    "mad_lu",
++    "samples",
++    "method",
++    "corpus_version",
++}
++
++
++class PromotionError(ValueError):
++    """Raised when a report is not safe to promote."""
++
++
++def _object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
++    result: dict[str, Any] = {}
++    for key, value in pairs:
++        if key in result:
++            raise PromotionError(f"duplicate JSON object key: {key!r}")
++        result[key] = value
++    return result
++
++
++def load_measurement_report(path: Path | str) -> dict[str, Any]:
++    try:
++        value = json.loads(Path(path).read_text(encoding="utf-8"), object_pairs_hook=_object_pairs)
++    except json.JSONDecodeError as exc:
++        raise PromotionError("measurement report is not valid JSON") from exc
++    if not isinstance(value, dict):
++        raise PromotionError("measurement report must be an object")
++    return value
++
++
++def _finite(value: object, name: str) -> float:
++    if isinstance(value, bool) or not isinstance(value, (int, float)):
++        raise PromotionError(f"{name} must be a finite number")
++    converted = float(value)
++    if not math.isfinite(converted):
++        raise PromotionError(f"{name} must be a finite number")
++    return converted
++
++
++def _key(row: Mapping[str, Any]) -> VoiceCalibrationKey:
++    values = [row.get(field) for field in ("model_source", "model_id", "quality", "speaker_id")]
++    if not all(
++        isinstance(value, (str, int)) and not isinstance(value, bool) for value in values[:3]
++    ):
++        raise PromotionError("aggregate rows must have non-empty voice identity fields")
++    speaker_id = values[3]
++    if not isinstance(speaker_id, int) or speaker_id < 0:
++        raise PromotionError("aggregate rows require a non-negative numeric speaker_id")
++    model_source, model_id, quality = values[:3]
++    if not all(isinstance(value, str) and value for value in (model_source, model_id, quality)):
++        raise PromotionError("aggregate identity strings must be non-empty")
++    return VoiceCalibrationKey(model_source, model_id, quality, f"speaker-{speaker_id}")
++
++
++def _validate_policy(policy: Mapping[str, Any]) -> None:
++    required = (
++        "repeats",
++        "reference_lufs",
++        "calibration_peak_ceiling_dbtp",
++        "max_boost_db",
++        "max_attenuation_db",
++        "max_mad_lu",
++    )
++    for field in required:
++        if field not in policy:
++            raise PromotionError(f"policy requires {field}")
++    repeats = policy["repeats"]
++    if isinstance(repeats, bool) or not isinstance(repeats, int) or repeats < 1:
++        raise PromotionError("policy.repeats must be a positive integer")
++    for field in required[1:]:
++        _finite(policy[field], f"policy.{field}")
++
++
++def validate_measurement_report(report: Mapping[str, Any]) -> None:
++    if report.get("schema") != 2:
++        raise PromotionError("measurement report must use schema 2")
++    if not isinstance(report.get("corpus"), str) or not report["corpus"]:
++        raise PromotionError("measurement report requires a non-empty corpus")
++    generated_with = report.get("generated_with")
++    if not isinstance(generated_with, Mapping) or not generated_with:
++        raise PromotionError("measurement report requires generated_with provenance")
++    if any(
++        not isinstance(key, str) or not isinstance(value, str) or not value
++        for key, value in generated_with.items()
++    ):
++        raise PromotionError("generated_with provenance must be non-empty string mappings")
++    policy = report.get("policy")
++    if not isinstance(policy, Mapping):
++        raise PromotionError("measurement report requires a policy object")
++    _validate_policy(policy)
++    coverage = report.get("coverage")
++    if not isinstance(coverage, Mapping):
++        raise PromotionError("measurement report requires coverage")
++    if coverage.get("catalog_identities_expected") != coverage.get("catalog_identities_measured"):
++        raise PromotionError("catalog identity coverage is incomplete")
++    if coverage.get("catalog_identities_failed") != 0 or coverage.get("complete") is not True:
++        raise PromotionError("catalog identity failures prevent promotion")
++    aggregates = report.get("aggregates")
++    if not isinstance(aggregates, list):
++        raise PromotionError("measurement report requires aggregates")
++    seen: set[VoiceCalibrationKey] = set()
++    for index, aggregate in enumerate(aggregates):
++        if not isinstance(aggregate, Mapping):
++            raise PromotionError(f"aggregate {index} must be an object")
++        key = _key(aggregate)
++        if key in seen:
++            raise PromotionError(f"duplicate aggregate voice key: {key}")
++        seen.add(key)
++        status = aggregate.get("status")
++        if not isinstance(status, str) or not status:
++            raise PromotionError(f"aggregate {key} requires a status")
++        repeats = aggregate.get("repeat_count")
++        if isinstance(repeats, bool) or not isinstance(repeats, int) or repeats < 0:
++            raise PromotionError(f"aggregate {key} has invalid repeat_count")
++        for field in ("median_lufs", "mad_lu", "max_true_peak_dbtp"):
++            _finite(aggregate.get(field), f"aggregate {key}.{field}")
++
++
++def _runtime_record(
++    aggregate: Mapping[str, Any], report: Mapping[str, Any], gain_db: float
++) -> dict[str, Any]:
++    policy = report["policy"]
++    return {
++        "gain_db": gain_db,
++        "measured_lufs": _finite(aggregate["median_lufs"], "median_lufs"),
++        "reference_lufs": _finite(policy["reference_lufs"], "reference_lufs"),
++        "mad_lu": _finite(aggregate["mad_lu"], "mad_lu"),
++        "samples": aggregate["repeat_count"],
++        "method": "bs1770",
++        "corpus_version": report["corpus"],
++    }
++
++
++def build_runtime_calibration(
++    report: Mapping[str, Any], *, reviewed_statuses: frozenset[str] = REVIEWED_STATUSES
++) -> dict[str, Any]:
++    validate_measurement_report(report)
++    policy = report["policy"]
++    repeats = policy["repeats"]
++    reference = _finite(policy["reference_lufs"], "policy.reference_lufs")
++    ceiling = _finite(
++        policy["calibration_peak_ceiling_dbtp"], "policy.calibration_peak_ceiling_dbtp"
++    )
++    max_mad = _finite(policy["max_mad_lu"], "policy.max_mad_lu")
++    voices: dict[str, dict[str, Any]] = {}
++    for aggregate in report["aggregates"]:
++        if aggregate["status"] not in reviewed_statuses or aggregate["repeat_count"] != repeats:
++            continue
++        mad = _finite(aggregate["mad_lu"], "aggregate.mad_lu")
++        if mad > max_mad:
++            continue
++        measured = _finite(aggregate["median_lufs"], "aggregate.median_lufs")
++        true_peak = _finite(aggregate["max_true_peak_dbtp"], "aggregate.max_true_peak_dbtp")
++        requested = reference - measured
++        gain = min(requested, ceiling - true_peak) if requested > 0 else requested
++        key = str(_key(aggregate))
++        if key in voices:
++            raise PromotionError(f"duplicate runtime calibration key: {key}")
++        voices[key] = _runtime_record(aggregate, report, gain)
++    return {
++        "schema": 1,
++        "method": "bs1770",
++        "corpus": report["corpus"],
++        "reference_lufs": reference,
++        "generated_with": dict(sorted(report["generated_with"].items())),
++        "voices": {key: voices[key] for key in sorted(voices)},
++    }
++
++
++def write_runtime_calibration(report_path: Path | str, output_path: Path | str) -> None:
++    output = Path(output_path)
++    if output.resolve() == PRODUCTION_CALIBRATION_PATH.resolve():
++        raise PromotionError("refusing to overwrite packaged production calibration data")
++    catalog = build_runtime_calibration(load_measurement_report(report_path))
++    output.parent.mkdir(parents=True, exist_ok=True)
++    output.write_text(
++        json.dumps(catalog, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
++    )
++
++
++def main(argv: Sequence[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("report", type=Path)
++    parser.add_argument("output", type=Path)
++    parser.add_argument("--review-status", action="append", default=[])
++    args = parser.parse_args(argv)
++    statuses = frozenset(args.review_status) if args.review_status else REVIEWED_STATUSES
++    report = load_measurement_report(args.report)
++    catalog = build_runtime_calibration(report, reviewed_statuses=statuses)
++    if args.output.resolve() == PRODUCTION_CALIBRATION_PATH.resolve():
++        raise SystemExit("refusing to overwrite packaged production calibration data")
++    args.output.parent.mkdir(parents=True, exist_ok=True)
++    args.output.write_text(
++        json.dumps(catalog, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
++    )
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/docs/architecture.md b/docs/architecture.md
+index e4574c8..8b72e1f 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -42,3 +42,26 @@ OnnxVoice returns raw model audio. PiperSynth resolves speaker IDs and scalar sy
+ Use `with PiperVoice.load(...)` and `with PiperPipeline(...)` where possible. `close()` is idempotent and closes prepared plans, the planner, and owned OnnxVoice runtimes. Injected voice factories and planners remain caller-managed dependencies.
+
+ The package is clean-room independent from Piper's GPL runtime. Compatibility is expressed through the external model protocol, voice configuration, and public behavior, not copied implementation code.
++
++## Offline voice loudness calibration
++
++Voice leveling is an offline catalog-data flow, not a synthesis-time measurement:
++
++```text
++complete OnnxVoice Piper catalog
++  -> expand every numeric speaker
++  -> count 1..10 stimulus per locale
++  -> three repeats with leveling off and normalize_audio=True
++  -> audiosig BS.1770 integrated LUFS and true peak
++  -> median/MAD and headroom-safe gain
++  -> reviewable schema-2 report
++  -> strict promotion to runtime schema 1
++```
++
++Managed pipelines retain the `VoiceBundle.installation`, so runtime lookup uses the canonical installation ID, metadata quality, and resolved numeric speaker. Local path loads intentionally have no catalog identity. The exact key is `piper:model-id:quality:speaker-N`; aliases and display names are never used as calibration identities.
++
++Runtime processing is `raw inference -> optional legacy peak normalization -> static catalog or override gain -> user/segment volume -> finite validation -> one final clamp`. The static gain is cheap and deterministic. Missing identity or missing record produces a zero-gain diagnostic rather than a fuzzy substitution.
++
++`target_lufs` is a separate complete-output `AudioCompose` policy. It is valid for composed batch output and rejected by true streaming APIs because normalizing each streamed unit would not normalize the finished document. The benchmark uses `voice_leveling="off"`, `target_lufs=None`, `normalize_audio=True`, and volume `1.0` so its measurements match the shipped processing baseline.
++
++The benchmark enumerates the complete current `VoiceAssetManager.list_voices(refresh=True)` inventory and expands `range(max(1, num_speakers))`. Filtered or offline runs are development evidence only and cannot pass the full-coverage promotion gate. Production promotion validates provenance, policy, repeat count, finite values, MAD, exact identities, and coverage, recomputes true-peak-safe gains, strips benchmark-only fields, and refuses the packaged output path.
+diff --git a/pipersynth/__init__.py b/pipersynth/__init__.py
+index 6c153cf..8fc12c6 100644
+--- a/pipersynth/__init__.py
++++ b/pipersynth/__init__.py
+@@ -47,11 +47,22 @@ from .errors import (
+     VoiceClosedError,
+     VoiceNotFoundError,
+ )
++from .loudness_config import LoudnessConfig, PeakPolicy, VoiceLevelingMode, coerce_loudness
+ from .pipeline import PiperPipeline, PreparedAudioUnits, build_pipeline
+ from .preparation import IdentityTextPreparer, PreparedTextResult, SpokenformTextPreparer
+ from .session import ProviderConfig, available_providers
+ from .types import AudioChunk, AudioResult, AudioUnitDescriptor, AudioUnitResult, SynthesisConfig
+ from .voice import PiperVoice
++from .voice_level import (
++    CalibrationDataError,
++    VoiceCalibrationCatalog,
++    VoiceCalibrationKey,
++    VoiceLevelApplication,
++    VoiceLevelCalibration,
++    apply_voice_level_calibration,
++    default_voice_calibration,
++    load_voice_calibration,
++)
+
+ __all__ = [
+     "AudioChunk",
+@@ -65,6 +76,10 @@ __all__ = [
+     "AssetProgressEvent",
+     "GenerationConfig",
+     "LinguisticsConfig",
++    "LoudnessConfig",
++    "PeakPolicy",
++    "VoiceLevelingMode",
++    "coerce_loudness",
+     "PauseConfig",
+     "PlannerConfig",
+     "SSMDConfig",
+@@ -84,6 +99,14 @@ __all__ = [
+     "InvalidSynthesisConfigError",
+     "ModelFileNotFoundError",
+     "ModelInferenceError",
++    "CalibrationDataError",
++    "VoiceCalibrationCatalog",
++    "VoiceCalibrationKey",
++    "VoiceLevelApplication",
++    "VoiceLevelCalibration",
++    "apply_voice_level_calibration",
++    "default_voice_calibration",
++    "load_voice_calibration",
+     "ModelLoadError",
+     "OptionalDependencyError",
+     "OfflineAssetError",
+diff --git a/pipersynth/audio.py b/pipersynth/audio.py
+index 45c1e0a..808f078 100644
+--- a/pipersynth/audio.py
++++ b/pipersynth/audio.py
+@@ -20,14 +20,8 @@ def _as_float32_1d(audio: np.ndarray, *, name: str = "audio") -> np.ndarray:
+     return result
+
+
+-def postprocess_audio(
+-    audio: np.ndarray,
+-    *,
+-    normalize: bool,
+-    volume: float,
+-) -> np.ndarray:
+-    """Normalize, scale, validate, and clip a waveform without mutating it."""
+-
++def prepare_audio(audio: np.ndarray, *, normalize: bool) -> np.ndarray:
++    """Validate inference audio and apply the legacy peak normalization step."""
+     result = _as_float32_1d(audio)
+     if normalize and result.size:
+         peak = float(np.max(np.abs(result)))
+@@ -35,6 +29,14 @@ def postprocess_audio(
+             result = result / peak
+         else:
+             result = np.zeros_like(result)
++    return result
++
++
++def finish_audio(audio: np.ndarray, *, volume: float) -> np.ndarray:
++    """Apply user volume and perform the single final safety clamp."""
++    result = _as_float32_1d(audio)
++    if isinstance(volume, bool) or not isinstance(volume, (int, float)) or not np.isfinite(volume):
++        raise ModelInferenceError("volume must be a finite number")
+     if volume != 1.0:
+         result = result * np.float32(volume)
+     if not np.all(np.isfinite(result)):
+@@ -42,6 +44,17 @@ def postprocess_audio(
+     return np.clip(result, -1.0, 1.0).astype(np.float32, copy=False)
+
+
++def postprocess_audio(
++    audio: np.ndarray,
++    *,
++    normalize: bool,
++    volume: float,
++) -> np.ndarray:
++    """Normalize, scale, validate, and clip a waveform without mutating it."""
++
++    return finish_audio(prepare_audio(audio, normalize=normalize), volume=volume)
++
++
+ def float_to_int16(audio: np.ndarray) -> np.ndarray:
+     """Convert finite normalized audio to clipped signed 16-bit PCM."""
+
+diff --git a/pipersynth/audio_job.py b/pipersynth/audio_job.py
+index 2ffd2dc..b62ce55 100644
+--- a/pipersynth/audio_job.py
++++ b/pipersynth/audio_job.py
+@@ -19,6 +19,7 @@ from utterplan import UtterancePlan
+
+ from . import __version__
+ from .audio import postprocess_audio
++from .loudness_config import LoudnessConfig
+ from .plan_adapter import PreparedPiperSegment, PreparedPiperUnit
+
+
+@@ -85,11 +86,24 @@ def render_segment(
+     if prepared.phoneme_ids:
+         if hasattr(voice, "_infer_ids"):
+             inference = voice._infer_ids(prepared.phoneme_ids, prepared.synthesis)
+-            audio = postprocess_audio(
+-                inference.audio,
+-                normalize=prepared.synthesis.normalize_audio,
+-                volume=prepared.synthesis.volume,
+-            )
++            if hasattr(voice, "postprocess_inference"):
++                audio = voice.postprocess_inference(inference.audio, prepared.synthesis)
++            else:
++                audio = postprocess_audio(
++                    inference.audio,
++                    normalize=prepared.synthesis.normalize_audio,
++                    volume=prepared.synthesis.volume,
++                )
++            application = getattr(voice, "last_voice_level_application", None)
++            if application is not None:
++                inference_metadata.update(
++                    {
++                        "voice_leveling_mode": prepared.synthesis.loudness.voice_leveling,
++                        "voice_calibration_key": str(application.key) if application.key else None,
++                        "voice_calibration_gain_db": application.gain_db,
++                        "voice_calibration_source": application.source,
++                    }
++                )
+             if inference.timing_summary is not None:
+                 inference_metadata["pipersynth.onnx_timings"] = _json_safe(inference.timing_summary)
+             if inference.output_summary:
+@@ -142,6 +156,7 @@ def build_audio_job_context(
+     prepared_units: Sequence[PreparedPiperUnit],
+     voice: Any,
+     voice_id: str | None,
++    loudness: LoudnessConfig | None = None,
+     producer_version: str = __version__,
+ ) -> PiperAudioJobContext:
+     segments_by_id = {segment.id: segment for segment in plan.segments}
+@@ -254,7 +269,15 @@ def build_audio_job_context(
+     output = OutputPolicy(
+         sample_rate=voice.config.sample_rate,
+         channels=1,
+-        loudness=LoudnessPolicy(target_lufs=None, true_peak_ceiling_dbtp=None),
++        loudness=LoudnessPolicy(
++            target_lufs=loudness.target_lufs if loudness is not None else None,
++            true_peak_ceiling_dbtp=(
++                loudness.true_peak_ceiling_dbtp
++                if loudness is not None and loudness != LoudnessConfig()
++                else None
++            ),
++            peak_policy=loudness.peak_policy if loudness is not None else "reduce_gain",
++        ),
+         clip_policy="clamp",
+     )
+     producer = {"name": "pipersynth", "version": producer_version}
+diff --git a/pipersynth/config.py b/pipersynth/config.py
+index ce9f5fa..ac55982 100644
+--- a/pipersynth/config.py
++++ b/pipersynth/config.py
+@@ -10,6 +10,7 @@ from utterplan import LinguisticsConfig, PauseConfig, SSMDConfig
+
+ from ._warnings import warn_external
+ from .errors import InvalidSynthesisConfigError
++from .loudness_config import LoudnessConfig
+ from .session import ProviderConfig, ProviderSpec
+
+
+@@ -63,6 +64,7 @@ class PipelineConfig:
+     model_path: Path | str
+     config_path: Path | str | None = None
+     generation: GenerationConfig = field(default_factory=GenerationConfig)
++    loudness: LoudnessConfig = field(default_factory=LoudnessConfig)
+     providers: tuple[ProviderSpec | ProviderConfig, ...] | None = None
+     provider_options: Mapping[str, Any] | None = None
+     session_options: Any | None = None
+@@ -85,6 +87,8 @@ class PipelineConfig:
+     return_diagnostics: bool = True
+
+     def __post_init__(self) -> None:
++        if not isinstance(self.loudness, LoudnessConfig):
++            raise ValueError("loudness must be a LoudnessConfig")
+         if self.document_format not in {"plain", "ssmd"}:
+             raise ValueError("document_format must be 'plain' or 'ssmd'")
+         if self.text_preparation not in {"identity", "spokenform"}:
+diff --git a/pipersynth/data/voice_level_calibration.json b/pipersynth/data/voice_level_calibration.json
+new file mode 100644
+index 0000000..689bbb6
+--- /dev/null
++++ b/pipersynth/data/voice_level_calibration.json
+@@ -0,0 +1,13 @@
++{
++  "schema": 1,
++  "method": "bs1770",
++  "corpus": "pipersynth-count-1-to-10-v1",
++  "reference_lufs": -24.0,
++  "generated_with": {
++    "audiosig": "unmeasured",
++    "onnxvoice": "unmeasured",
++    "pipersynth": "unmeasured",
++    "utterplan": "unmeasured"
++  },
++  "voices": {}
++}
+diff --git a/pipersynth/loudness_config.py b/pipersynth/loudness_config.py
+new file mode 100644
+index 0000000..86639e7
+--- /dev/null
++++ b/pipersynth/loudness_config.py
+@@ -0,0 +1,56 @@
++from __future__ import annotations
++
++from collections.abc import Mapping
++from dataclasses import dataclass
++from typing import Literal
++
++import numpy as np
++
++from .errors import InvalidSynthesisConfigError
++
++VoiceLevelingMode = Literal["off", "calibrated"]
++PeakPolicy = Literal["reduce_gain", "error"]
++
++
++def _validate_db(value: float | None, name: str) -> None:
++    if value is None:
++        return
++    if isinstance(value, bool) or not isinstance(value, (int, float)):
++        raise InvalidSynthesisConfigError(f"{name} must be a finite number or None")
++    if not np.isfinite(value):
++        raise InvalidSynthesisConfigError(f"{name} must be finite")
++
++
++@dataclass(frozen=True, slots=True)
++class LoudnessConfig:
++    """Immutable voice-leveling and complete-output loudness policy."""
++
++    voice_leveling: VoiceLevelingMode = "off"
++    target_lufs: float | None = None
++    true_peak_ceiling_dbtp: float | None = -1.0
++    peak_policy: PeakPolicy = "reduce_gain"
++    voice_gain_db: float | None = None
++
++    def __post_init__(self) -> None:
++        if self.voice_leveling not in {"off", "calibrated"}:
++            raise InvalidSynthesisConfigError("voice_leveling must be 'off' or 'calibrated'")
++        if self.peak_policy not in {"reduce_gain", "error"}:
++            raise InvalidSynthesisConfigError("peak_policy must be 'reduce_gain' or 'error'")
++        _validate_db(self.target_lufs, "target_lufs")
++        _validate_db(self.true_peak_ceiling_dbtp, "true_peak_ceiling_dbtp")
++        _validate_db(self.voice_gain_db, "voice_gain_db")
++
++
++def coerce_loudness(value: LoudnessConfig | Mapping[str, object] | None) -> LoudnessConfig:
++    """Normalize a public loudness override into an immutable policy."""
++
++    if value is None:
++        return LoudnessConfig()
++    if isinstance(value, LoudnessConfig):
++        return value
++    if isinstance(value, Mapping):
++        return LoudnessConfig(**value)  # type: ignore[arg-type]
++    raise TypeError("loudness must be a LoudnessConfig, mapping, or None")
++
++
++__all__ = ["LoudnessConfig", "PeakPolicy", "VoiceLevelingMode", "coerce_loudness"]
+diff --git a/pipersynth/pipeline.py b/pipersynth/pipeline.py
+index 9cd276d..bc083bb 100644
+--- a/pipersynth/pipeline.py
++++ b/pipersynth/pipeline.py
+@@ -23,6 +23,7 @@ from .composition import audio_result_from_composition
+ from .config import GenerationConfig, PipelineConfig
+ from .diagnostics import TimingDiagnostics
+ from .errors import ConfigFileNotFoundError, OptionalDependencyError, VoiceClosedError
++from .loudness_config import LoudnessConfig, coerce_loudness
+ from .plan_adapter import PreparedPiperUnit
+ from .plan_adapter import prepare_plan as adapt_plan
+ from .planning import inspect_voice_config, planner_config_from_pipersynth
+@@ -192,6 +193,7 @@ class PiperPipeline:
+         force_download: bool = False,
+         generation: GenerationConfig | None = None,
+         providers: Any | None = None,
++        loudness: LoudnessConfig | Mapping[str, object] | None = None,
+         provider_options: Mapping[str, Any] | None = None,
+         session_options: Any | None = None,
+         frontend_options: Mapping[str, Any] | None = None,
+@@ -225,6 +227,7 @@ class PiperPipeline:
+             model_path=bundle.model_path,
+             config_path=bundle.config_path,
+             generation=generation or GenerationConfig(),
++            loudness=coerce_loudness(loudness),
+             providers=providers,
+             provider_options=provider_options,
+             session_options=session_options,
+@@ -289,14 +292,26 @@ class PiperPipeline:
+             if self._voice_factory is not None:
+                 self._voice = self._voice_factory(self.config)
+             else:
+-                self._voice = PiperVoice.load(
+-                    self.config.model_path,
+-                    self.config.config_path,
+-                    providers=self.config.providers,
+-                    provider_options=self.config.provider_options,
+-                    session_options=self.config.session_options,
+-                    frontend_options=self.config.frontend_options,
+-                )
++                if (
++                    self._voice_bundle is not None
++                    and getattr(self._voice_bundle, "installation", None) is not None
++                ):
++                    self._voice = PiperVoice.from_bundle(
++                        self._voice_bundle,
++                        providers=self.config.providers,
++                        provider_options=self.config.provider_options,
++                        session_options=self.config.session_options,
++                        frontend_options=self.config.frontend_options,
++                    )
++                else:
++                    self._voice = PiperVoice.load(
++                        self.config.model_path,
++                        self.config.config_path,
++                        providers=self.config.providers,
++                        provider_options=self.config.provider_options,
++                        session_options=self.config.session_options,
++                        frontend_options=self.config.frontend_options,
++                    )
+         return self._voice
+
+     @property
+@@ -339,7 +354,12 @@ class PiperPipeline:
+             "directive_policy",
+             "language_policy",
+         }
+-        unknown = set(overrides) - generation_fields - planner_fields
++        unknown = set(overrides) - generation_fields - planner_fields - {"loudness"}
++        loudness = (
++            coerce_loudness(overrides["loudness"])
++            if "loudness" in overrides
++            else self.config.loudness
++        )
+         if unknown:
+             names = ", ".join(sorted(unknown))
+             raise TypeError(f"unknown run override(s): {names}")
+@@ -348,7 +368,7 @@ class PiperPipeline:
+             **{key: value for key, value in overrides.items() if key in generation_fields},
+         )
+         pipeline = {key: value for key, value in overrides.items() if key in planner_fields}
+-        return replace(self.config, generation=generation, **pipeline)
++        return replace(self.config, generation=generation, loudness=loudness, **pipeline)
+
+     def _planner_config(self, config: PipelineConfig) -> Any:
+         planner = self._ensure_planner(config)
+@@ -374,7 +394,9 @@ class PiperPipeline:
+         planner, planner_config = self._planner_config(config)
+         return planner.plan(text, config=planner_config, unit=unit)
+
+-    def _to_synthesis_config(self, generation: GenerationConfig) -> SynthesisConfig:
++    def _to_synthesis_config(
++        self, generation: GenerationConfig, loudness: LoudnessConfig | None = None
++    ) -> SynthesisConfig:
+         return SynthesisConfig(
+             speaker_id=self.voice.resolve_speaker_id(generation.speaker),
+             length_scale=generation.length_scale,
+@@ -382,6 +404,7 @@ class PiperPipeline:
+             noise_w_scale=generation.noise_w_scale,
+             normalize_audio=generation.normalize_audio,
+             volume=generation.volume,
++            loudness=loudness or LoudnessConfig(),
+         )
+
+     def prepare_plan(self, plan: UtterancePlan, **render_overrides: Any) -> PreparedAudioUnits:
+@@ -414,6 +437,7 @@ class PiperPipeline:
+             plan,
+             self.voice,
+             effective.generation,
++            loudness=effective.loudness,
+             directive_policy=effective.directive_policy,
+             language_policy=effective.language_policy,
+             language_aliases=effective.language_aliases,
+@@ -428,6 +452,12 @@ class PiperPipeline:
+     ) -> PiperAudioJobContext:
+         self._ensure_open()
+         plan.validate()
++        config = render_overrides.get("config")
++        effective = (
++            config
++            if isinstance(config, PipelineConfig)
++            else self._resolve_run_config(render_overrides)
++        )
+         prepared = self.prepare_plan(plan, **dict(render_overrides))
+         try:
+             return build_audio_job_context(
+@@ -435,6 +465,7 @@ class PiperPipeline:
+                 prepared_units=prepared._prepared_units,
+                 voice=self.voice,
+                 voice_id=getattr(self._voice_bundle, "voice_id", None),
++                loudness=effective.loudness,
+             )
+         finally:
+             prepared.close()
+@@ -446,6 +477,12 @@ class PiperPipeline:
+     def render_plan(self, plan: UtterancePlan, **render_overrides: Any) -> AudioResult:
+         self._ensure_open()
+         plan.validate()
++        config = render_overrides.get("config")
++        effective = (
++            config
++            if isinstance(config, PipelineConfig)
++            else self._resolve_run_config(render_overrides)
++        )
+         started = time.perf_counter()
+         context = self._build_audio_job_context(plan, **render_overrides)
+         composition_started = time.perf_counter()
+@@ -491,6 +528,19 @@ class PiperPipeline:
+                 "provider": self.voice.diagnostics.providers_active,
+             }
+         )
++        application = getattr(self.voice, "last_voice_level_application", None)
++        if application is not None:
++            result.metadata.update(
++                {
++                    "voice_leveling_mode": effective.loudness.voice_leveling,
++                    "voice_calibration_key": str(application.key) if application.key else None,
++                    "voice_calibration_gain_db": application.gain_db,
++                    "voice_calibration_source": application.source,
++                    "voice_calibration_corpus": getattr(
++                        getattr(self.voice, "_calibration_catalog", None), "corpus", None
++                    ),
++                }
++            )
+         return result
+
+     def prepare_units(
+@@ -503,6 +553,10 @@ class PiperPipeline:
+         effective = self._resolve_run_config(
+             {**overrides, **({"unit": unit} if unit is not None else {})}
+         )
++        if effective.loudness.target_lufs is not None:
++            raise ValueError(
++                "target_lufs requires complete output and is not supported for streaming"
++            )
+         plan = self.plan(
+             text,
+             unit=effective.unit,
+@@ -553,7 +607,9 @@ class PiperPipeline:
+                 item for item in getattr(result, "tokens", ()) if hasattr(item, "ids")
+             )
+         ids = tuple(identifier for sentence in sentences for identifier in sentence.ids)
+-        audio = self.voice.synthesize_ids(ids, self._to_synthesis_config(config.generation))
++        audio = self.voice.synthesize_ids(
++            ids, self._to_synthesis_config(config.generation, config.loudness)
++        )
+         return AudioResult(
+             audio=audio,
+             sample_rate=self.voice.config.sample_rate,
+diff --git a/pipersynth/plan_adapter.py b/pipersynth/plan_adapter.py
+index 5b7aecb..a0a6aac 100644
+--- a/pipersynth/plan_adapter.py
++++ b/pipersynth/plan_adapter.py
+@@ -13,6 +13,7 @@ from .errors import (
+     UnsupportedPlanLanguageError,
+     VoiceBindingError,
+ )
++from .loudness_config import LoudnessConfig
+ from .types import SynthesisConfig
+
+
+@@ -116,6 +117,7 @@ def _segment_synthesis(
+     segment: PlanSegment,
+     voice: Any,
+     generation: GenerationConfig,
++    loudness: LoudnessConfig,
+     directive_policy: str,
+ ) -> tuple[SynthesisConfig, list[str]]:
+     warnings: list[str] = []
+@@ -173,6 +175,7 @@ def _segment_synthesis(
+             noise_w_scale=generation.noise_w_scale,
+             normalize_audio=generation.normalize_audio,
+             volume=volume,
++            loudness=loudness,
+         ),
+         warnings,
+     )
+@@ -221,6 +224,7 @@ def prepare_plan(
+     voice: Any,
+     generation: GenerationConfig,
+     *,
++    loudness: LoudnessConfig | None = None,
+     directive_policy: Literal["error", "warn", "ignore"] = "error",
+     language_policy: Literal["strict", "allow"] = "strict",
+     language_aliases: Mapping[str, str] | None = None,
+@@ -229,6 +233,7 @@ def prepare_plan(
+
+     plan.validate()
+     aliases = dict(language_aliases or {})
++    effective_loudness = loudness or LoudnessConfig()
+     segments = {segment.id: segment for segment in plan.segments}
+     prepared_units: list[PreparedPiperUnit] = []
+     for unit in plan.units:
+@@ -241,7 +246,7 @@ def prepare_plan(
+                 else normalize_language(segment.language, aliases)
+             )
+             synthesis, directive_warnings = _segment_synthesis(
+-                plan, segment, voice, generation, directive_policy
++                plan, segment, voice, generation, effective_loudness, directive_policy
+             )
+             pronunciation = segment.directives.pronunciation
+             if pronunciation is not None and pronunciation.alphabet not in {"ipa", "espeak-ipa3"}:
+diff --git a/pipersynth/types.py b/pipersynth/types.py
+index ba60e60..cdc2acd 100644
+--- a/pipersynth/types.py
++++ b/pipersynth/types.py
+@@ -12,6 +12,7 @@ from ._warnings import warn_external
+ from .audio import audio_to_int16_bytes, float_to_int16, write_wav
+ from .diagnostics import RuntimeDiagnostics, TimingDiagnostics
+ from .errors import InvalidSynthesisConfigError, ModelInferenceError, OptionalDependencyError
++from .loudness_config import LoudnessConfig
+
+
+ def _finite(value: float, name: str, *, minimum: float) -> None:
+@@ -33,7 +34,11 @@ class SynthesisConfig:
+     volume: float = 1.0
+     noise_w: float | None = None
+
++    loudness: LoudnessConfig = field(default_factory=LoudnessConfig)
++
+     def __post_init__(self) -> None:
++        if not isinstance(self.loudness, LoudnessConfig):
++            raise InvalidSynthesisConfigError("loudness must be a LoudnessConfig")
+         if self.speaker_id is not None and (
+             isinstance(self.speaker_id, bool) or not isinstance(self.speaker_id, int)
+         ):
+diff --git a/pipersynth/voice.py b/pipersynth/voice.py
+index 2c02af3..4aa6752 100644
+--- a/pipersynth/voice.py
++++ b/pipersynth/voice.py
+@@ -18,7 +18,7 @@ from ._onnxvoice import (
+     summarize_inference,
+ )
+ from .asset_progress import AssetProgressEvent
+-from .audio import postprocess_audio, silence_samples
++from .audio import finish_audio, prepare_audio, silence_samples
+ from .diagnostics import RuntimeDiagnostics
+ from .errors import (
+     ConfigFileNotFoundError,
+@@ -29,6 +29,7 @@ from .errors import (
+ )
+ from .session import ProviderConfig, ProviderSpec
+ from .types import AudioChunk, SynthesisConfig
++from .voice_level import VoiceCalibrationKey, VoiceLevelApplication, apply_voice_level_calibration
+
+ SessionFactory = Callable[..., Any]
+
+@@ -92,6 +93,8 @@ class PiperVoice:
+         self.installation = installation
+         self._closed = False
+
++        self._last_voice_level_application: VoiceLevelApplication | None = None
++
+     @classmethod
+     def _from_resolved(
+         cls,
+@@ -128,6 +131,36 @@ class PiperVoice:
+             installation=resolved.installation,
+         )
+
++    @classmethod
++    def from_bundle(
++        cls,
++        bundle: Any,
++        *,
++        providers: Sequence[ProviderSpec | ProviderConfig] | None = None,
++        provider_options: Mapping[str, Any] | None = None,
++        session_options: Any | None = None,
++        frontend_options: Mapping[str, Any] | None = None,
++    ) -> PiperVoice:
++        """Load a managed VoiceBundle without discarding its catalog identity."""
++        if getattr(bundle, "installation", None) is None:
++            return cls.load(
++                bundle.model_path,
++                bundle.config_path,
++                providers=providers,
++                provider_options=provider_options,
++                session_options=session_options,
++                frontend_options=frontend_options,
++            )
++        from ._onnxvoice import installation_to_voice_info
++
++        return cls._from_resolved(
++            installation_to_voice_info(bundle.installation),
++            providers=providers,
++            provider_options=provider_options,
++            session_options=session_options,
++            frontend_options=frontend_options,
++        )
++
+     @classmethod
+     def load(
+         cls,
+@@ -287,6 +320,25 @@ class PiperVoice:
+             )
+         return value
+
++    def calibration_key(self, syn_config: SynthesisConfig) -> VoiceCalibrationKey | None:
++        """Return the exact managed Piper identity used by calibration lookup."""
++        self._ensure_open()
++        if self.installation is None:
++            return None
++        model_id = getattr(self.installation, "id", None)
++        metadata = getattr(self.installation, "metadata", {}) or {}
++        quality = metadata.get("quality") if isinstance(metadata, Mapping) else None
++        if not isinstance(model_id, str) or not model_id:
++            return None
++        if not isinstance(quality, str) or not quality:
++            return None
++        speaker_id = self.resolve_speaker_id(syn_config.speaker_id)
++        return VoiceCalibrationKey("piper", model_id, quality, f"speaker-{speaker_id or 0}")
++
++    @property
++    def last_voice_level_application(self) -> VoiceLevelApplication | None:
++        return self._last_voice_level_application
++
+     def _resolved_scales(self, syn: SynthesisConfig) -> tuple[float, float, float]:
+         return (
+             float(self.config.noise_scale if syn.noise_scale is None else syn.noise_scale),
+@@ -349,6 +401,18 @@ class PiperVoice:
+         timing_summary, output_summary = summarize_inference(result)
+         return PiperInference(audio, sample_rate, timing_summary, output_summary)
+
++    def postprocess_inference(
++        self,
++        audio: np.ndarray,
++        syn_config: SynthesisConfig,
++    ) -> np.ndarray:
++        """Apply shared runtime audio processing and static voice leveling."""
++        prepared = prepare_audio(audio, normalize=syn_config.normalize_audio)
++        key = self.calibration_key(syn_config)
++        calibrated, application = apply_voice_level_calibration(prepared, syn_config.loudness, key)
++        self._last_voice_level_application = application
++        return finish_audio(calibrated, volume=syn_config.volume)
++
+     def synthesize_ids(
+         self,
+         phoneme_ids: Sequence[int],
+@@ -358,11 +422,7 @@ class PiperVoice:
+
+         syn = syn_config or SynthesisConfig()
+         inference = self._infer_ids(phoneme_ids, syn)
+-        return postprocess_audio(
+-            inference.audio,
+-            normalize=syn.normalize_audio,
+-            volume=syn.volume,
+-        )
++        return self.postprocess_inference(inference.audio, syn)
+
+     def synthesize(
+         self,
+@@ -378,6 +438,18 @@ class PiperVoice:
+                 continue
+             audio = self.synthesize_ids(sentence.ids, syn_config)
+             metadata: dict[str, Any] = {}
++            application = self.last_voice_level_application
++            if application is not None:
++                metadata.update(
++                    {
++                        "voice_leveling_mode": syn_config.loudness.voice_leveling
++                        if syn_config
++                        else "off",
++                        "voice_calibration_key": str(application.key) if application.key else None,
++                        "voice_calibration_gain_db": application.gain_db,
++                        "voice_calibration_source": application.source,
++                    }
++                )
+             if result.diagnostics is not None:
+                 metadata["frontend_diagnostics"] = result.diagnostics
+             yield AudioChunk(
+diff --git a/pipersynth/voice_level.py b/pipersynth/voice_level.py
+new file mode 100644
+index 0000000..ebaa0f1
+--- /dev/null
++++ b/pipersynth/voice_level.py
+@@ -0,0 +1,243 @@
++from __future__ import annotations
++
++import json
++from collections.abc import Mapping
++from dataclasses import dataclass
++from functools import lru_cache
++from importlib.resources import files
++from pathlib import Path
++from typing import Any, Literal
++
++import audiosig
++import numpy as np
++
++from .loudness_config import LoudnessConfig
++
++_SUPPORTED_SCHEMA = 1
++_SUPPORTED_METHOD = "bs1770"
++_RECORD_FIELDS = {
++    "gain_db",
++    "measured_lufs",
++    "reference_lufs",
++    "mad_lu",
++    "samples",
++    "method",
++    "corpus_version",
++}
++_TOP_FIELDS = {"schema", "method", "corpus", "reference_lufs", "generated_with", "voices"}
++
++
++class CalibrationDataError(ValueError):
++    """Raised when a calibration catalog is malformed or unsafe."""
++
++
++@dataclass(frozen=True, slots=True, order=True)
++class VoiceCalibrationKey:
++    model_source: str
++    model_id: str
++    quality: str
++    voice: str
++
++    def __post_init__(self) -> None:
++        values = (self.model_source, self.model_id, self.quality, self.voice)
++        if any(not isinstance(value, str) or not value for value in values):
++            raise CalibrationDataError("calibration key components must be non-empty strings")
++
++    def __str__(self) -> str:
++        return ":".join((self.model_source, self.model_id, self.quality, self.voice))
++
++    @classmethod
++    def parse(cls, value: str) -> VoiceCalibrationKey:
++        if not isinstance(value, str):
++            raise CalibrationDataError("calibration key must be a string")
++        parts = value.split(":")
++        if len(parts) != 4:
++            raise CalibrationDataError(
++                "calibration key must have model_source:model_id:quality:voice form"
++            )
++        return cls(*parts)
++
++
++@dataclass(frozen=True, slots=True)
++class VoiceLevelCalibration:
++    gain_db: float
++    measured_lufs: float | None = None
++    reference_lufs: float | None = None
++    mad_lu: float | None = None
++    samples: int | None = None
++    method: str = _SUPPORTED_METHOD
++    corpus_version: str | None = None
++
++
++@dataclass(frozen=True, slots=True)
++class VoiceCalibrationCatalog:
++    schema: int
++    method: str
++    corpus: str
++    reference_lufs: float
++    generated_with: Mapping[str, str]
++    voices: Mapping[VoiceCalibrationKey, VoiceLevelCalibration]
++
++
++VoiceLevelSource = Literal["off", "override", "catalog", "missing_identity", "missing_calibration"]
++
++
++@dataclass(frozen=True, slots=True)
++class VoiceLevelApplication:
++    applied: bool
++    gain_db: float
++    source: VoiceLevelSource
++    key: VoiceCalibrationKey | None
++
++
++def _finite(value: Any, name: str) -> float:
++    if isinstance(value, bool) or not isinstance(value, (int, float)):
++        raise CalibrationDataError(f"{name} must be a finite number")
++    converted = float(value)
++    if not np.isfinite(converted):
++        raise CalibrationDataError(f"{name} must be finite")
++    return converted
++
++
++def _optional_finite(value: Any, name: str) -> float | None:
++    return None if value is None else _finite(value, name)
++
++
++def _object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
++    result: dict[str, Any] = {}
++    for key, value in pairs:
++        if key in result:
++            raise CalibrationDataError(f"duplicate JSON object key: {key!r}")
++        result[key] = value
++    return result
++
++
++def _validate_record(key: VoiceCalibrationKey, raw: Any) -> VoiceLevelCalibration:
++    if not isinstance(raw, Mapping):
++        raise CalibrationDataError(f"record for {key} must be an object")
++    unknown = set(raw) - _RECORD_FIELDS
++    if unknown:
++        raise CalibrationDataError(f"record for {key} has unknown field(s): {sorted(unknown)}")
++    if "gain_db" not in raw:
++        raise CalibrationDataError(f"record for {key} is missing gain_db")
++    method = raw.get("method", _SUPPORTED_METHOD)
++    if method != _SUPPORTED_METHOD:
++        raise CalibrationDataError(f"record for {key} has unsupported method: {method!r}")
++    samples = raw.get("samples")
++    if samples is not None:
++        if isinstance(samples, bool) or not isinstance(samples, int) or samples <= 0:
++            raise CalibrationDataError(f"record for {key} samples must be a positive integer")
++    return VoiceLevelCalibration(
++        gain_db=_finite(raw["gain_db"], f"{key}.gain_db"),
++        measured_lufs=_optional_finite(raw.get("measured_lufs"), f"{key}.measured_lufs"),
++        reference_lufs=_optional_finite(raw.get("reference_lufs"), f"{key}.reference_lufs"),
++        mad_lu=_optional_finite(raw.get("mad_lu"), f"{key}.mad_lu"),
++        samples=samples,
++        method=method,
++        corpus_version=raw.get("corpus_version"),
++    )
++
++
++def load_voice_calibration(path: Path | str) -> VoiceCalibrationCatalog:
++    """Load and strictly validate a runtime calibration catalog."""
++
++    source = Path(path)
++    try:
++        raw = json.loads(source.read_text(encoding="utf-8"), object_pairs_hook=_object_pairs)
++    except json.JSONDecodeError as exc:
++        raise CalibrationDataError(f"invalid calibration JSON: {source}") from exc
++    if not isinstance(raw, Mapping):
++        raise CalibrationDataError("calibration catalog must be an object")
++    unknown = set(raw) - _TOP_FIELDS
++    if unknown:
++        raise CalibrationDataError(f"calibration catalog has unknown field(s): {sorted(unknown)}")
++    if raw.get("schema") != _SUPPORTED_SCHEMA:
++        raise CalibrationDataError(f"unsupported calibration schema: {raw.get('schema')!r}")
++    if raw.get("method") != _SUPPORTED_METHOD:
++        raise CalibrationDataError(f"unsupported calibration method: {raw.get('method')!r}")
++    corpus = raw.get("corpus")
++    if not isinstance(corpus, str) or not corpus:
++        raise CalibrationDataError("corpus must be a non-empty string")
++    generated_with = raw.get("generated_with")
++    if not isinstance(generated_with, Mapping) or any(
++        not isinstance(key, str) or not isinstance(value, str)
++        for key, value in generated_with.items()
++    ):
++        raise CalibrationDataError("generated_with must be a string mapping")
++    voices_raw = raw.get("voices")
++    if not isinstance(voices_raw, Mapping):
++        raise CalibrationDataError("voices must be an object")
++    voices: dict[VoiceCalibrationKey, VoiceLevelCalibration] = {}
++    for raw_key, record in voices_raw.items():
++        key = VoiceCalibrationKey.parse(raw_key)
++        if key in voices:
++            raise CalibrationDataError(f"duplicate normalized calibration key: {key}")
++        voices[key] = _validate_record(key, record)
++    return VoiceCalibrationCatalog(
++        schema=_SUPPORTED_SCHEMA,
++        method=_SUPPORTED_METHOD,
++        corpus=corpus,
++        reference_lufs=_finite(raw.get("reference_lufs"), "reference_lufs"),
++        generated_with=dict(sorted(generated_with.items())),
++        voices=dict(sorted(voices.items(), key=lambda item: str(item[0]))),
++    )
++
++
++@lru_cache(maxsize=1)
++def default_voice_calibration() -> VoiceCalibrationCatalog:
++    resource = files("pipersynth").joinpath("data", "voice_level_calibration.json")
++    with resource.open("r", encoding="utf-8") as handle:
++        raw = json.load(handle, object_pairs_hook=_object_pairs)
++    # Reuse the same validation path while keeping packaged-resource loading portable.
++    import tempfile
++
++    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as handle:
++        json.dump(raw, handle)
++        handle.flush()
++        return load_voice_calibration(handle.name)
++
++
++def apply_voice_level_calibration(
++    audio: np.ndarray,
++    config: LoudnessConfig,
++    key: VoiceCalibrationKey | None,
++    *,
++    catalog: VoiceCalibrationCatalog | None = None,
++) -> tuple[np.ndarray, VoiceLevelApplication]:
++    """Apply one deterministic static gain; never measure the waveform."""
++
++    result = np.asarray(audio, dtype=np.float32)
++    if config.voice_gain_db is not None:
++        gain = float(config.voice_gain_db)
++        source: VoiceLevelSource = "override"
++    elif config.voice_leveling != "calibrated":
++        gain = 0.0
++        source = "off"
++    elif key is None:
++        gain = 0.0
++        source = "missing_identity"
++    else:
++        selected = (catalog or default_voice_calibration()).voices.get(key)
++        if selected is None:
++            gain = 0.0
++            source = "missing_calibration"
++        else:
++            gain = selected.gain_db
++            source = "catalog"
++    if gain:
++        result = np.asarray(audiosig.apply_gain_db(result, gain, clip=False), dtype=np.float32)
++    else:
++        result = result.copy()
++    return result, VoiceLevelApplication(bool(gain), gain, source, key)
++
++
++__all__ = [
++    "CalibrationDataError",
++    "VoiceCalibrationCatalog",
++    "VoiceCalibrationKey",
++    "VoiceLevelApplication",
++    "VoiceLevelCalibration",
++    "apply_voice_level_calibration",
++    "default_voice_calibration",
++    "load_voice_calibration",
++]
+diff --git a/pyproject.toml b/pyproject.toml
+index 3f30c73..b213a41 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -16,7 +16,8 @@ dependencies = [
+   "piperg2p",
+   "onnxvoice>=0.1,<0.2",
+   "audiocompose>=0.1,<0.2",
+-]
++  "audiosig>=0.1.4,<0.2",
++ ]
+ keywords = ["tts", "text-to-speech", "piper", "onnx", "speech", "onnxruntime"]
+ classifiers = [
+   "Development Status :: 3 - Alpha",
+@@ -60,7 +61,7 @@ markers = [
+ addopts = "-q --strict-markers"
+
+ [tool.setuptools.package-data]
+-pipersynth = ["py.typed"]
++pipersynth = ["py.typed", "data/*.json"]
+
+ [tool.setuptools_scm]
+ write_to = "pipersynth/_version.py"
+diff --git a/tests/test_voice_leveling.py b/tests/test_voice_leveling.py
+new file mode 100644
+index 0000000..2ede282
+--- /dev/null
++++ b/tests/test_voice_leveling.py
+@@ -0,0 +1,136 @@
++import json
++from types import SimpleNamespace
++
++import numpy as np
++import pytest
++from piperg2p import PiperFrontend, VoiceConfig
++
++from pipersynth import (
++    LoudnessConfig,
++    PiperVoice,
++    SynthesisConfig,
++    VoiceCalibrationCatalog,
++    VoiceCalibrationKey,
++    VoiceLevelCalibration,
++    apply_voice_level_calibration,
++    load_voice_calibration,
++)
++from pipersynth.voice_level import CalibrationDataError
++
++
++def _config(num_speakers=1):
++    return VoiceConfig.from_dict(
++        {
++            "num_symbols": 4,
++            "num_speakers": num_speakers,
++            "audio": {"sample_rate": 22050},
++            "phoneme_type": "text",
++            "phoneme_id_map": {"_": [0], "a": [1], "b": [2], " ": [3]},
++            "default_speaker_id": 1 if num_speakers > 1 else 0,
++        }
++    )
++
++
++def test_exact_catalog_gain_and_override_precedence():
++    key = VoiceCalibrationKey("piper", "voice", "medium", "speaker-0")
++    catalog = VoiceCalibrationCatalog(
++        1,
++        "bs1770",
++        "test",
++        -24.0,
++        {"test": "1"},
++        {key: VoiceLevelCalibration(-6.0, samples=3)},
++    )
++    audio = np.array([1.0], dtype=np.float32)
++    leveled, application = apply_voice_level_calibration(
++        audio, LoudnessConfig(voice_leveling="calibrated"), key, catalog=catalog
++    )
++    assert application.source == "catalog"
++    assert np.isclose(leveled[0], 10 ** (-6 / 20), rtol=1e-5)
++    overridden, application = apply_voice_level_calibration(
++        audio,
++        LoudnessConfig(voice_leveling="calibrated", voice_gain_db=-12.0),
++        key,
++        catalog=catalog,
++    )
++    assert application.source == "override"
++    assert np.isclose(overridden[0], 10 ** (-12 / 20), rtol=1e-5)
++
++
++def test_local_voice_has_no_catalog_identity_and_explicit_gain_still_works():
++    runtime = SimpleNamespace(infer=lambda *args, **kwargs: None)
++    voice = PiperVoice(runtime, _config(), PiperFrontend(_config()))
++    assert voice.calibration_key(SynthesisConfig()) is None
++    audio, application = apply_voice_level_calibration(
++        np.array([1.0], dtype=np.float32),
++        LoudnessConfig(voice_leveling="calibrated"),
++        None,
++    )
++    assert application.source == "missing_identity"
++    assert np.array_equal(audio, [1.0])
++
++
++def test_managed_key_uses_numeric_speaker_and_quality():
++    config = _config(3)
++    installation = SimpleNamespace(id="voice", metadata={"quality": "medium"})
++    runtime = SimpleNamespace(infer=lambda *args, **kwargs: None)
++    voice = PiperVoice(runtime, config, PiperFrontend(config), installation=installation)
++    assert voice.calibration_key(SynthesisConfig(speaker_id=1)) == VoiceCalibrationKey(
++        "piper", "voice", "medium", "speaker-1"
++    )
++    assert voice.calibration_key(SynthesisConfig()) == VoiceCalibrationKey(
++        "piper", "voice", "medium", "speaker-1"
++    )
++
++
++def test_loader_rejects_duplicate_keys_unknown_fields_and_nonfinite(tmp_path):
++    duplicate = tmp_path / "duplicate.json"
++    duplicate.write_text('{"schema": 1, "schema": 1}')
++    with pytest.raises(CalibrationDataError):
++        load_voice_calibration(duplicate)
++    base = {
++        "schema": 1,
++        "method": "bs1770",
++        "corpus": "test",
++        "reference_lufs": -24.0,
++        "generated_with": {"test": "1"},
++        "voices": {"piper:voice:medium:speaker-0": {"gain_db": 0.0}},
++    }
++    unknown = tmp_path / "unknown.json"
++    payload = json.loads(json.dumps(base))
++    payload["voices"]["piper:voice:medium:speaker-0"]["extra"] = 1
++    unknown.write_text(json.dumps(payload))
++    with pytest.raises(CalibrationDataError):
++        load_voice_calibration(unknown)
++    nonfinite = tmp_path / "nonfinite.json"
++    nonfinite.write_text(json.dumps({**base, "reference_lufs": float("nan")}))
++    with pytest.raises(CalibrationDataError):
++        load_voice_calibration(nonfinite)
++
++
++def test_processing_order_normalize_then_gain_then_volume():
++    class Runtime:
++        def infer(self, ids, **kwargs):
++            return SimpleNamespace(
++                audio=np.array([[[2.0, -1.0]]], dtype=np.float32), sample_rate=22050
++            )
++
++        def close(self):
++            pass
++
++    config = _config()
++    voice = PiperVoice(Runtime(), config, PiperFrontend(config))
++    audio = voice.synthesize_ids(
++        [1],
++        SynthesisConfig(
++            volume=0.5,
++            loudness=LoudnessConfig(voice_gain_db=-6.0),
++        ),
++    )
++    assert np.allclose(audio, [10 ** (-6 / 20) * 0.5, -0.5 * 10 ** (-6 / 20) * 0.5])
++
++
++def test_packaged_catalog_data_is_present():
++    from importlib.resources import files
++
++    assert files("pipersynth").joinpath("data", "voice_level_calibration.json").is_file()
+diff --git a/tests/test_voice_loudness_benchmark.py b/tests/test_voice_loudness_benchmark.py
+new file mode 100644
+index 0000000..a8cacf0
+--- /dev/null
++++ b/tests/test_voice_loudness_benchmark.py
+@@ -0,0 +1,64 @@
++import pytest
++
++from benchmarks.voice_loudness import (
++    aggregate_measurements,
++    calibration_candidate,
++    inventory_entries,
++    resolve_count_stimulus,
++)
++from pipersynth.assets import VoiceMetadata
++
++
++def _voice(num_speakers=2):
++    return VoiceMetadata(
++        "voice",
++        "Voice",
++        "en_US",
++        "en",
++        None,
++        "medium",
++        num_speakers,
++        {"alice": 0, "bob": 1},
++        (),
++        "revision",
++    )
++
++
++def test_inventory_expands_every_numeric_speaker_and_alias_filter():
++    entries = inventory_entries([_voice()])
++    assert [entry["speaker_id"] for entry in entries] == [0, 1]
++    assert inventory_entries([_voice()], voice="voice", speaker=1)[0]["calibration_key"].endswith(
++        "speaker-1"
++    )
++
++
++def test_aggregation_uses_median_mad_and_safe_boost():
++    entries = inventory_entries([_voice(1)])
++    measurements = [
++        {**entries[0], "integrated_lufs": value, "true_peak_dbtp": -3.0, "repeat": index}
++        for index, value in enumerate((-20.0, -20.2, -19.8))
++    ]
++    aggregate = aggregate_measurements(measurements)[0]
++    assert aggregate["median_lufs"] == -20.0
++    assert aggregate["mad_lu"] == pytest.approx(0.2)
++    candidate = calibration_candidate(aggregate)
++    assert candidate["requested_gain_db"] == -4.0
++    assert candidate["gain_db"] == -4.0
++
++
++def test_positive_boost_is_headroom_limited_and_fallback_rejects_digits():
++    entries = inventory_entries([_voice(1)])
++    aggregate = aggregate_measurements(
++        [
++            {**entries[0], "integrated_lufs": -30.0, "true_peak_dbtp": -0.5, "repeat": i}
++            for i in range(3)
++        ]
++    )[0]
++    candidate = calibration_candidate(aggregate)
++    assert candidate["gain_db"] == -0.5
++    assert candidate["status"] == "headroom_limited"
++    stimulus = resolve_count_stimulus(
++        "xx",
++        fallbacks={"xx": {"text": "one, two, three, four, five, six, seven, eight, nine, ten."}},
++    )
++    assert stimulus.fallback_used
+diff --git a/tests/test_voice_loudness_calibration.py b/tests/test_voice_loudness_calibration.py
+new file mode 100644
+index 0000000..ce039ff
+--- /dev/null
++++ b/tests/test_voice_loudness_calibration.py
+@@ -0,0 +1,53 @@
++from copy import deepcopy
++
++import pytest
++
++from benchmarks.voice_loudness import build_report, inventory_entries, load_policy
++from benchmarks.voice_loudness_calibration import (
++    PRODUCTION_CALIBRATION_PATH,
++    PromotionError,
++    build_runtime_calibration,
++)
++from pipersynth.assets import VoiceMetadata
++
++
++def _report():
++    voice = VoiceMetadata("voice", "Voice", "en_US", "en", None, "medium", 1, {}, (), "rev")
++    entry = inventory_entries([voice])[0]
++    measurements = [
++        {**entry, "repeat": index, "integrated_lufs": -20.0, "true_peak_dbtp": -3.0}
++        for index in range(3)
++    ]
++    return build_report([entry], measurements, [], load_policy())
++
++
++def test_promotion_recomputes_gain_and_strips_benchmark_fields():
++    catalog = build_runtime_calibration(_report())
++    record = catalog["voices"]["piper:voice:medium:speaker-0"]
++    assert record["gain_db"] == -4.0
++    assert "requested_gain_db" not in record
++    assert set(record) == {
++        "gain_db",
++        "measured_lufs",
++        "reference_lufs",
++        "mad_lu",
++        "samples",
++        "method",
++        "corpus_version",
++    }
++
++
++def test_promotion_rejects_incomplete_coverage_and_nonfinite_rows():
++    report = _report()
++    incomplete = deepcopy(report)
++    incomplete["coverage"]["complete"] = False
++    with pytest.raises(PromotionError):
++        build_runtime_calibration(incomplete)
++    nonfinite = _report()
++    nonfinite["aggregates"][0]["median_lufs"] = float("nan")
++    with pytest.raises(PromotionError):
++        build_runtime_calibration(nonfinite)
++
++
++def test_production_path_is_never_an_automatic_output_target():
++    assert PRODUCTION_CALIBRATION_PATH.name == "voice_level_calibration.json"

@@ -1,0 +1,1066 @@
+ benchmarks/voice_loudness.py           | 108 ++++++-
+ examples/README.md                     |  25 ++
+ examples/all_voices.py                 | 495 +++++++++++++++++++++++++++++++++
+ examples/run_all.py                    |  15 +-
+ tests/test_all_voices_example.py       | 176 ++++++++++++
+ tests/test_examples_runner.py          |  16 ++
+ tests/test_voice_loudness_benchmark.py |  54 ++++
+ 7 files changed, 874 insertions(+), 15 deletions(-)
+
+diff --git a/benchmarks/voice_loudness.py b/benchmarks/voice_loudness.py
+index 6718a54..f9e7720 100644
+--- a/benchmarks/voice_loudness.py
++++ b/benchmarks/voice_loudness.py
+@@ -42,6 +42,11 @@ class LoudnessStimulus:
+     fallback_used: bool
+
+
++@dataclass(frozen=True, slots=True)
++class StimulusPreflight:
++    stimuli: Mapping[str, LoudnessStimulus]
++    unsupported: Mapping[str, str]
++
+ @dataclass(frozen=True, slots=True)
+ class BenchmarkPolicy:
+     schema: int
+@@ -152,6 +157,37 @@ def resolve_count_stimulus(
+         )
+
+
++def preflight_stimuli(
++    entries: Sequence[Mapping[str, Any]],
++    fallbacks: dict[str, dict[str, Any]] | None = None,
++) -> StimulusPreflight:
++    """Resolve every distinct locale before any synthesis starts."""
++    fallbacks = load_fallbacks() if fallbacks is None else fallbacks
++    stimuli: dict[str, LoudnessStimulus] = {}
++    unsupported: dict[str, str] = {}
++    for locale in sorted({str(entry["locale"]) for entry in entries}):
++        try:
++            stimuli[locale] = resolve_count_stimulus(locale, fallbacks)
++        except StimulusResolutionError as error:
++            unsupported[locale] = str(error)
++    return StimulusPreflight(stimuli=stimuli, unsupported=unsupported)
++
++
++def stimulus_failures_for_entries(
++    entries: Sequence[Mapping[str, Any]],
++    unsupported: Mapping[str, str],
++) -> list[dict[str, Any]]:
++    """Represent every identity whose locale failed stimulus preflight."""
++    return [
++        {
++            **dict(entry),
++            "status": "unsupported_stimulus",
++            "error": unsupported[str(entry["locale"])],
++        }
++        for entry in entries
++        if str(entry["locale"]) in unsupported
++    ]
++
+ def expand_speaker_ids(metadata: VoiceMetadata) -> tuple[int, ...]:
+     return tuple(range(max(1, metadata.num_speakers)))
+
+@@ -218,11 +254,10 @@ def measure_repeats(
+     offline: bool = False,
+     repeats: int = 3,
+     refresh_catalog: bool = False,
+-    stimulus: LoudnessStimulus | None = None,
++    stimulus: LoudnessStimulus,
+ ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+     """Measure one catalog voice/speaker repeatedly with leveling disabled."""
+
+-    stimulus = stimulus or resolve_count_stimulus(str(entry["locale"]))
+     measurements: list[dict[str, Any]] = []
+     failures: list[dict[str, Any]] = []
+     pipeline: PiperPipeline | None = None
+@@ -369,19 +404,40 @@ def coverage_report(
+         if item.get("status") in {"non_finite_loudness", "insufficient_repeats"}
+     )
+     failed_expected = failed & expected
++    failed_or_missing = (expected - measured) | failed_expected
+     return {
+         "catalog_identities_expected": len(expected),
+         "catalog_identities_measured": len(measured),
+-        "catalog_identities_failed": len(expected - measured) + len(failed_expected),
++        "catalog_identities_failed": len(failed_or_missing),
+         "complete": expected == measured and not failed_expected,
+     }
+
++def language_preflight_payload(preflight: StimulusPreflight | None) -> dict[str, Any]:
++    if preflight is None:
++        return {"locales": {}, "supported_count": 0, "unsupported_count": 0}
++    locales: dict[str, dict[str, Any]] = {}
++    for locale, stimulus in sorted(preflight.stimuli.items()):
++        locales[locale] = {
++            "status": "supported",
++            "generator": stimulus.generator,
++            "spoken_text": stimulus.spoken_text,
++            "normalized_language": stimulus.normalized_language,
++        }
++    for locale, error in sorted(preflight.unsupported.items()):
++        locales[locale] = {"status": "unsupported", "error": error}
++    return {
++        "locales": locales,
++        "supported_count": len(preflight.stimuli),
++        "unsupported_count": len(preflight.unsupported),
++    }
++
+
+ def build_report(
+     entries: Sequence[Mapping[str, Any]],
+     measurements: Sequence[Mapping[str, Any]],
+     failures: Sequence[Mapping[str, Any]],
+     policy: BenchmarkPolicy,
++    language_preflight: StimulusPreflight | None = None,
+ ) -> dict[str, Any]:
+     aggregates = aggregate_measurements(
+         measurements, repeats=policy.repeats, max_mad_lu=policy.max_mad_lu
+@@ -405,6 +461,7 @@ def build_report(
+         "measurements": list(measurements),
+         "aggregates": candidates,
+         "failures": list(failures),
++        "language_preflight": language_preflight_payload(language_preflight),
+         "coverage": coverage_report(entries, aggregates, failures, repeats=policy.repeats),
+     }
+
+@@ -432,7 +489,11 @@ def write_outputs(
+         f"- Expected identities: {coverage['catalog_identities_expected']}\n"
+         f"- Measured identities: {coverage['catalog_identities_measured']}\n"
+         f"- Failed identities: {coverage['catalog_identities_failed']}\n"
+-        f"- Complete coverage: {coverage['complete']}\n",
++        f"- Complete coverage: {coverage['complete']}\n"
++        f"- Distinct locales: {report['language_preflight']['supported_count'] + report['language_preflight']['unsupported_count']}\n"
++        f"- Supported stimulus locales: {report['language_preflight']['supported_count']}\n"
++        f"- Unsupported stimulus locales: {report['language_preflight']['unsupported_count']}\n"
++        f"- Unsupported: {', '.join(sorted(report['language_preflight']['locales'])) if report['language_preflight']['unsupported_count'] else 'none'}\n",
+         encoding="utf-8",
+     )
+     if candidate_path is not None:
+@@ -452,6 +513,16 @@ _aggregate = aggregate_measurements
+ _calibration_candidate = calibration_candidate
+ _coverage = coverage_report
+
++def print_stimulus_preflight(preflight: StimulusPreflight) -> None:
++    print("Language/stimulus preflight")
++    print("---------------------------")
++    for locale in sorted(set(preflight.stimuli) | set(preflight.unsupported)):
++        stimulus = preflight.stimuli.get(locale)
++        if stimulus is None:
++            print(f"{locale}  unsupported  {preflight.unsupported[locale]}")
++        else:
++            print(f"{locale}  {stimulus.generator}  {stimulus.spoken_text}")
++
+
+ def main(argv: Sequence[str] | None = None) -> int:
+     parser = argparse.ArgumentParser(description=__doc__)
+@@ -486,27 +557,38 @@ def main(argv: Sequence[str] | None = None) -> int:
+     )
+     print(f"Catalog cache: {manager.cache_info().directory}")
+     print(f"Catalog voices: {len(voices)}; expanded identities: {len(entries)}")
++    preflight = preflight_stimuli(entries)
++    print_stimulus_preflight(preflight)
+     if args.list_stimuli:
+-        for locale in sorted({str(entry["locale"]) for entry in entries}):
+-            try:
+-                print(json.dumps(asdict(resolve_count_stimulus(locale)), ensure_ascii=False))
+-            except StimulusResolutionError as error:
+-                print(f"{locale}: unsupported_stimulus ({error})")
+         return 0
++    failures = stimulus_failures_for_entries(entries, preflight.unsupported)
++    if preflight.unsupported and not args.allow_failures:
++        report = build_report(entries, [], failures, policy, language_preflight=preflight)
++        write_outputs(report, args.output, candidate_path=args.write_calibration_candidate)
++        print(
++            f"Unsupported stimulus locales: {', '.join(sorted(preflight.unsupported))}. "
++            "Use --allow-failures to measure the supported subset."
++        )
++        return 2
++    measurable_entries = [
++        entry for entry in entries if str(entry["locale"]) in preflight.stimuli
++    ]
+     measurements: list[dict[str, Any]] = []
+-    failures: list[dict[str, Any]] = []
+-    for index, entry in enumerate(entries, 1):
+-        print(f"[{index}/{len(entries)}] {entry['calibration_key']}")
++    for index, entry in enumerate(measurable_entries, 1):
++        print(f"[{index}/{len(measurable_entries)}] {entry['calibration_key']}")
+         measured, failed = measure_repeats(
+             entry,
+             cache_dir=args.cache_dir,
+             offline=args.offline,
+             repeats=policy.repeats,
+             refresh_catalog=False,
++            stimulus=preflight.stimuli[str(entry["locale"])],
+         )
+         measurements.extend(measured)
+         failures.extend(failed)
+-    report = build_report(entries, measurements, failures, policy)
++    report = build_report(
++        entries, measurements, failures, policy, language_preflight=preflight
++    )
+     complete = write_outputs(report, args.output, candidate_path=args.write_calibration_candidate)
+     if args.write_calibration_candidate and not complete:
+         print("Incomplete catalog coverage; production candidate suppressed.")
+diff --git a/examples/README.md b/examples/README.md
+index ae7c362..f395910 100644
+--- a/examples/README.md
++++ b/examples/README.md
+@@ -32,6 +32,31 @@ PIPERSYNTH_OFFLINE=1 python examples/run_all.py
+ PIPERSYNTH_EXAMPLE_VOICE=en_US-lessac-high python examples/basic.py
+ ```
+
++
++## All Piper voices and languages
++
++Print the current Piper catalog without downloading voice models:
++
++```bash
++python examples/all_voices.py --list-only
++```
++
++The command prints every catalog voice, the expanded speaker-identity count, exact Piper locale codes, and current Spokenform coverage. It writes `all_voices_inventory.json`, `all_languages.json`, `spokenform_missing_languages.json`, and the one-locale-per-line `spokenform_missing_languages.txt` handoff below `example-artefacts/`.
++
++A catalog voice is a model entry. A speaker identity is one numeric speaker within that model, so one multi-speaker catalog voice can produce many calibration identities. The full showcase is resource-heavy and is not run by default. Select it explicitly with:
++
++```bash
++python examples/run_all.py --include-resource-heavy
++python examples/all_voices.py
++```
++
++Use `--skip-unsupported` only for a clearly marked partial showcase. The all-voices output groups WAV files by each model's native sample rate rather than silently resampling them.
++
++
++## Loudness benchmark preflight
++
++The loudness benchmark resolves every distinct Piper locale and count stimulus before creating the first synthesis pipeline. Unsupported locales are reported together and represented as identity-level failures. Use `python benchmarks/voice_loudness.py --list-stimuli` to inspect this preflight without inference.
++
+ Direct phoneme mode is intentionally excluded from this suite because
+ `is_phonemes=True` bypasses UtterPlan. The library convenience APIs remain supported;
+ the examples use explicit planning to make the semantic boundary visible.
+diff --git a/examples/all_voices.py b/examples/all_voices.py
+new file mode 100644
+index 0000000..b9b7e40
+--- /dev/null
++++ b/examples/all_voices.py
+@@ -0,0 +1,495 @@
++#!/usr/bin/env python3
++"""Inventory and optionally synthesize every Piper catalog voice identity."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import sys
++from collections import defaultdict
++from collections.abc import Callable, Sequence
++from dataclasses import asdict, dataclass
++from pathlib import Path
++from typing import Literal
++
++import numpy as np
++
++from pipersynth import GenerationConfig, LoudnessConfig, PiperPipeline, VoiceAssetManager
++from pipersynth.assets import VoiceMetadata
++from pipersynth.audio import write_wav
++from pipersynth.voice_level import VoiceCalibrationKey
++
++try:
++    from examples._output import artefact_dir
++except ModuleNotFoundError:
++    from _output import artefact_dir
++
++
++@dataclass(frozen=True, slots=True)
++class VoiceCatalogEntry:
++    number: int
++    model_id: str
++    name: str
++    locale: str
++    language_family: str
++    region: str | None
++    quality: str
++    num_speakers: int
++    speaker_names: tuple[str, ...]
++    aliases: tuple[str, ...]
++    source_revision: str
++
++
++@dataclass(frozen=True, slots=True)
++class VoiceIdentityEntry:
++    number: int
++    model_id: str
++    quality: str
++    locale: str
++    speaker_id: int
++    speaker_name: str | None
++    calibration_key: str
++
++
++@dataclass(frozen=True, slots=True)
++class SpokenformProbe:
++    status: Literal["supported", "unsupported", "unavailable"]
++    normalized_language: str | None
++    error: str | None
++
++
++@dataclass(frozen=True, slots=True)
++class LanguageCoverage:
++    locale: str
++    base_language: str
++    catalog_voice_count: int
++    speaker_identity_count: int
++    example_voice_ids: tuple[str, ...]
++    spokenform_status: Literal["supported", "unsupported", "unavailable"]
++    normalized_language: str | None
++    error: str | None
++
++
++@dataclass(frozen=True, slots=True)
++class ShowcaseCatalog:
++    voices: tuple[VoiceCatalogEntry, ...]
++    identities: tuple[VoiceIdentityEntry, ...]
++    languages: tuple[LanguageCoverage, ...]
++
++
++def _base_language(locale: str) -> str:
++    return locale.replace("-", "_").split("_", 1)[0].lower()
++
++
++def _speaker_map(metadata: VoiceMetadata) -> dict[int, str]:
++    return {int(identifier): str(name) for name, identifier in metadata.speaker_id_map.items()}
++
++
++def build_catalog(voices: Sequence[VoiceMetadata]) -> ShowcaseCatalog:
++    """Build catalog rows and exact speaker identities without resolving assets."""
++
++    ordered = sorted(voices, key=lambda item: (item.language_code, item.id, item.quality))
++    catalog_rows: list[VoiceCatalogEntry] = []
++    identity_rows: list[VoiceIdentityEntry] = []
++    for voice_number, metadata in enumerate(ordered, 1):
++        names_by_id = _speaker_map(metadata)
++        speaker_names = tuple(
++            names_by_id[speaker_id]
++            for speaker_id in range(max(1, metadata.num_speakers))
++            if speaker_id in names_by_id
++        )
++        catalog_rows.append(
++            VoiceCatalogEntry(
++                number=voice_number,
++                model_id=metadata.id,
++                name=metadata.name,
++                locale=metadata.language_code,
++                language_family=metadata.language_family,
++                region=metadata.region,
++                quality=metadata.quality,
++                num_speakers=metadata.num_speakers,
++                speaker_names=speaker_names,
++                aliases=metadata.aliases,
++                source_revision=metadata.source_revision,
++            )
++        )
++        for speaker_id in range(max(1, metadata.num_speakers)):
++            key = VoiceCalibrationKey("piper", metadata.id, metadata.quality, f"speaker-{speaker_id}")
++            identity_rows.append(
++                VoiceIdentityEntry(
++                    number=len(identity_rows) + 1,
++                    model_id=metadata.id,
++                    quality=metadata.quality,
++                    locale=metadata.language_code,
++                    speaker_id=speaker_id,
++                    speaker_name=names_by_id.get(speaker_id),
++                    calibration_key=str(key),
++                )
++            )
++    return ShowcaseCatalog(tuple(catalog_rows), tuple(identity_rows), ())
++
++
++def probe_spokenform_locale(locale: str) -> SpokenformProbe:
++    """Probe one exact Piper locale without making Spokenform a discovery dependency."""
++
++    try:
++        from spokenform import normalize_language
++    except ImportError as error:
++        return SpokenformProbe("unavailable", None, str(error))
++    try:
++        normalized = str(normalize_language(locale))
++    except Exception as error:
++        return SpokenformProbe("unsupported", None, str(error))
++    return SpokenformProbe("supported", normalized, None)
++
++
++def build_language_coverage(
++    catalog: ShowcaseCatalog,
++    probe: Callable[[str], SpokenformProbe] = probe_spokenform_locale,
++) -> tuple[LanguageCoverage, ...]:
++    voices_by_locale: dict[str, list[VoiceCatalogEntry]] = defaultdict(list)
++    identities_by_locale: dict[str, list[VoiceIdentityEntry]] = defaultdict(list)
++    for voice in catalog.voices:
++        voices_by_locale[voice.locale].append(voice)
++    for identity in catalog.identities:
++        identities_by_locale[identity.locale].append(identity)
++
++    rows: list[LanguageCoverage] = []
++    for locale in sorted(voices_by_locale):
++        result = probe(locale)
++        rows.append(
++            LanguageCoverage(
++                locale=locale,
++                base_language=_base_language(locale),
++                catalog_voice_count=len(voices_by_locale[locale]),
++                speaker_identity_count=len(identities_by_locale[locale]),
++                example_voice_ids=tuple(item.model_id for item in voices_by_locale[locale][:3]),
++                spokenform_status=result.status,
++                normalized_language=result.normalized_language,
++                error=result.error,
++            )
++        )
++    return tuple(rows)
++
++
++def with_language_coverage(
++    catalog: ShowcaseCatalog,
++    probe: Callable[[str], SpokenformProbe] = probe_spokenform_locale,
++) -> ShowcaseCatalog:
++    return ShowcaseCatalog(catalog.voices, catalog.identities, build_language_coverage(catalog, probe))
++
++
++def _voice_dict(item: VoiceCatalogEntry) -> dict[str, object]:
++    return asdict(item) | {
++        "speaker_names": list(item.speaker_names),
++        "aliases": list(item.aliases),
++    }
++
++
++def _identity_dict(item: VoiceIdentityEntry) -> dict[str, object]:
++    return asdict(item)
++
++
++def _language_dict(item: LanguageCoverage) -> dict[str, object]:
++    return asdict(item) | {
++        "example_voice_ids": list(item.example_voice_ids),
++        "spokenform": {
++            "status": item.spokenform_status,
++            "normalized_language": item.normalized_language,
++            "error": item.error,
++        },
++    }
++
++
++def inventory_payload(catalog: ShowcaseCatalog) -> dict[str, object]:
++    return {
++        "schema": 1,
++        "catalog_voice_count": len(catalog.voices),
++        "speaker_identity_count": len(catalog.identities),
++        "voices": [_voice_dict(item) for item in catalog.voices],
++        "identities": [_identity_dict(item) for item in catalog.identities],
++        "languages": [_language_dict(item) for item in catalog.languages],
++    }
++
++
++def language_payload(catalog: ShowcaseCatalog) -> dict[str, object]:
++    return {
++        "schema": 1,
++        "catalog_voice_count": len(catalog.voices),
++        "speaker_identity_count": len(catalog.identities),
++        "languages": [_language_dict(item) for item in catalog.languages],
++    }
++
++
++def missing_language_payload(catalog: ShowcaseCatalog) -> dict[str, object]:
++    missing = [
++        _language_dict(item)
++        for item in catalog.languages
++        if item.spokenform_status != "supported"
++    ]
++    return {
++        "schema": 1,
++        "catalog_voice_count": len(catalog.voices),
++        "speaker_identity_count": len(catalog.identities),
++        "locales": missing,
++        "languages": missing,
++    }
++
++
++def write_inventory_outputs(catalog: ShowcaseCatalog, output_dir: Path) -> dict[str, Path]:
++    output_dir.mkdir(parents=True, exist_ok=True)
++    outputs = {
++        "inventory": output_dir / "all_voices_inventory.json",
++        "languages": output_dir / "all_languages.json",
++        "missing": output_dir / "spokenform_missing_languages.json",
++        "missing_text": output_dir / "spokenform_missing_languages.txt",
++    }
++    outputs["inventory"].write_text(
++        json.dumps(inventory_payload(catalog), indent=2, sort_keys=True, ensure_ascii=False) + "\n",
++        encoding="utf-8",
++    )
++    outputs["languages"].write_text(
++        json.dumps(language_payload(catalog), indent=2, sort_keys=True, ensure_ascii=False) + "\n",
++        encoding="utf-8",
++    )
++    outputs["missing"].write_text(
++        json.dumps(missing_language_payload(catalog), indent=2, sort_keys=True, ensure_ascii=False) + "\n",
++        encoding="utf-8",
++    )
++    missing_locales = sorted(
++        item.locale for item in catalog.languages if item.spokenform_status != "supported"
++    )
++    outputs["missing_text"].write_text("\n".join(missing_locales) + ("\n" if missing_locales else ""), encoding="utf-8")
++    return outputs
++
++
++def format_language_table(languages: Sequence[LanguageCoverage]) -> str:
++    lines = ["Piper locales", "-------------"]
++    lines.extend(item.locale for item in languages)
++    return "\n".join(lines)
++
++
++def format_voice_table(voices: Sequence[VoiceCatalogEntry]) -> str:
++    lines = [
++        "No.  Voice/model                    Locale   Quality  Speakers  Revision",
++        "---  ------------------------------  -------  -------  --------  --------",
++    ]
++    lines.extend(
++        f"{item.number:>3}  {item.model_id:<30}  {item.locale:<7}  {item.quality:<7}  "
++        f"{item.num_speakers:>8}  {item.source_revision}"
++        for item in voices
++    )
++    return "\n".join(lines)
++
++
++def format_identity_table(identities: Sequence[VoiceIdentityEntry]) -> str:
++    lines = ["No.  Calibration identity                                      Name", "---  ---------------------------------------------------------  ----"]
++    lines.extend(
++        f"{item.number:>3}  {item.calibration_key:<57}  {item.speaker_name or ''}"
++        for item in identities
++    )
++    return "\n".join(lines)
++
++
++def print_summary(catalog: ShowcaseCatalog, cache_dir: Path) -> None:
++    supported = sum(item.spokenform_status == "supported" for item in catalog.languages)
++    unsupported = len(catalog.languages) - supported
++    print("PiperSynth all-voices showcase")
++    print()
++    print(f"Catalog cache: {cache_dir}")
++    print(f"Catalog voices: {len(catalog.voices)}")
++    print(f"Expanded speaker identities: {len(catalog.identities)}")
++    print(f"Distinct Piper locales: {len(catalog.languages)}")
++    print()
++    print(format_language_table(catalog.languages))
++    print()
++    print("Spokenform coverage")
++    print("-------------------")
++    print(f"supported:   {supported}")
++    print(f"unsupported: {unsupported}")
++    print()
++    print("Unsupported Piper locales")
++    print("-------------------------")
++    for item in catalog.languages:
++        if item.spokenform_status != "supported":
++            print(
++                f"{item.locale}    base={item.base_language}    "
++                f"catalog_voices={item.catalog_voice_count}    "
++                f"speaker_identities={item.speaker_identity_count}"
++            )
++    print()
++    print(format_voice_table(catalog.voices))
++
++
++def _selected_metadata(
++    voices: Sequence[VoiceMetadata],
++    *,
++    voice: str | None,
++    language: str | None,
++    quality: str | None,
++    max_voices: int | None,
++) -> tuple[VoiceMetadata, ...]:
++    selected = list(voices)
++    if voice is not None:
++        selected = [item for item in selected if item.id == voice or voice in item.aliases]
++    if language is not None:
++        selected = [item for item in selected if item.language_code == language]
++    if quality is not None:
++        selected = [item for item in selected if item.quality == quality]
++    selected.sort(key=lambda item: (item.language_code, item.id, item.quality))
++    if max_voices is not None:
++        selected = selected[:max_voices]
++    return tuple(selected)
++
++
++def _synthesis_text(locale: str) -> str:
++    from benchmarks.voice_loudness import resolve_count_stimulus
++
++    return resolve_count_stimulus(locale).spoken_text
++
++
++def synthesize_catalog(
++    catalog: ShowcaseCatalog,
++    *,
++    output_dir: Path,
++    cache_dir: Path | None,
++    offline: bool,
++    refresh_catalog: bool,
++    voice_leveling: Literal["off", "calibrated"],
++    print_levels: bool,
++) -> None:
++    supported_locales = {
++        item.locale for item in catalog.languages if item.spokenform_status == "supported"
++    }
++    identities = [item for item in catalog.identities if item.locale in supported_locales]
++    by_model: dict[str, list[VoiceIdentityEntry]] = defaultdict(list)
++    for identity in identities:
++        by_model[identity.model_id].append(identity)
++
++    audio_by_rate: dict[int, list[np.ndarray]] = defaultdict(list)
++    manifest: list[dict[str, object]] = []
++    plans_written = False
++    for model_id in sorted(by_model):
++        model_identities = by_model[model_id]
++        first = model_identities[0]
++        with PiperPipeline.from_pretrained(
++            model_id,
++            cache_dir=cache_dir,
++            offline=offline,
++            refresh_catalog=refresh_catalog,
++            generation=GenerationConfig(speaker=first.speaker_id),
++            loudness=LoudnessConfig(voice_leveling=voice_leveling),
++            text_preparation="identity",
++            language=first.locale,
++        ) as pipeline:
++            for identity in model_identities:
++                index = len(manifest) + 1
++                print(f"[{index}/{len(identities)}] {identity.calibration_key}", flush=True)
++                result = pipeline.run(_synthesis_text(identity.locale), speaker=identity.speaker_id)
++                audio = np.asarray(result.audio, dtype=np.float32).reshape(-1)
++                start_frame = sum(part.size for part in audio_by_rate[result.sample_rate])
++                audio_by_rate[result.sample_rate].append(audio)
++                end_frame = start_frame + audio.size
++                manifest.append(
++                    {
++                        "model_id": identity.model_id,
++                        "quality": identity.quality,
++                        "locale": identity.locale,
++                        "speaker_id": identity.speaker_id,
++                        "speaker_name": identity.speaker_name,
++                        "calibration_key": identity.calibration_key,
++                        "sample_rate": result.sample_rate,
++                        "output_file": f"all_voices_{result.sample_rate}.wav",
++                        "start_frame": start_frame,
++                        "end_frame": end_frame,
++                        "duration_seconds": audio.size / result.sample_rate,
++                        "announcement": _synthesis_text(identity.locale),
++                    }
++                )
++                if not plans_written:
++                    plan = pipeline.plan(_synthesis_text(identity.locale), unit="sentence")
++                    plan.save(output_dir / "all_voices.utterplan.json")
++                    plans_written = True
++
++    for sample_rate, parts in sorted(audio_by_rate.items()):
++        write_wav(output_dir / f"all_voices_{sample_rate}.wav", np.concatenate(parts), sample_rate)
++    (output_dir / "all_voices_manifest.json").write_text(
++        json.dumps({"schema": 1, "identities": manifest}, indent=2, sort_keys=True) + "\n",
++        encoding="utf-8",
++    )
++    if print_levels:
++        print("Voice leveling: " + voice_leveling)
++    print(f"Rendered {len(manifest)} supported speaker identities.")
++
++
++def build_parser() -> argparse.ArgumentParser:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--list-only", action="store_true")
++    parser.add_argument("--show-identities", action="store_true")
++    parser.add_argument("--offline", action="store_true")
++    parser.add_argument("--refresh-catalog", action="store_true")
++    parser.add_argument("--cache-dir", type=Path)
++    parser.add_argument("--language")
++    parser.add_argument("--voice")
++    parser.add_argument("--quality")
++    parser.add_argument("--speaker", type=int)
++    parser.add_argument("--max-voices", type=int)
++    parser.add_argument("--skip-unsupported", action="store_true")
++    parser.add_argument("--voice-leveling", choices=("off", "calibrated"), default="off")
++    parser.add_argument("--print-levels", action="store_true")
++    return parser
++
++
++def main(argv: Sequence[str] | None = None) -> int:
++    args = build_parser().parse_args(argv)
++    manager = VoiceAssetManager(args.cache_dir, offline=args.offline)
++    metadata = manager.list_voices(refresh=args.refresh_catalog)
++    selected = _selected_metadata(
++        metadata,
++        voice=args.voice,
++        language=args.language,
++        quality=args.quality,
++        max_voices=args.max_voices,
++    )
++    catalog = build_catalog(selected)
++    if args.speaker is not None:
++        catalog = ShowcaseCatalog(
++            catalog.voices,
++            tuple(item for item in catalog.identities if item.speaker_id == args.speaker),
++            (),
++        )
++    catalog = with_language_coverage(catalog)
++    output_dir = artefact_dir()
++    write_inventory_outputs(catalog, output_dir)
++    print_summary(catalog, manager.cache_info().directory)
++    if args.show_identities:
++        print()
++        print(format_identity_table(catalog.identities))
++    sys.stdout.flush()
++
++    if args.list_only:
++        return 0
++    unsupported = [item for item in catalog.languages if item.spokenform_status != "supported"]
++    if unsupported and not args.skip_unsupported:
++        print(
++            f"Cannot synthesize the complete catalog: {len(unsupported)} Piper locales are not accepted by Spokenform."
++        )
++        print(f"See {output_dir / 'spokenform_missing_languages.txt'}.")
++        print("Use --list-only for inventory or --skip-unsupported for a partial showcase.")
++        return 2
++    if unsupported:
++        print(f"Partial showcase: skipping {len(unsupported)} unsupported Piper locales.")
++    synthesize_catalog(
++        catalog,
++        output_dir=output_dir,
++        cache_dir=args.cache_dir,
++        offline=args.offline,
++        refresh_catalog=args.refresh_catalog,
++        voice_leveling=args.voice_leveling,
++        print_levels=args.print_levels,
++    )
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/examples/run_all.py b/examples/run_all.py
+index e3e4501..6b7d1cf 100644
+--- a/examples/run_all.py
++++ b/examples/run_all.py
+@@ -22,15 +22,18 @@ _OUTPUT_ENV = "PIPERSYNTH_EXAMPLE_OUTPUT_DIR"
+ _EXCLUDED_FILES = {"__init__.py", "_output.py", "run_all.py"}
+ _OPTIONAL_EXAMPLES = {"german.py", "homographs.py"}
+ RunCommand = Callable[..., subprocess.CompletedProcess[str]]
++_RESOURCE_HEAVY_EXAMPLES = {"all_voices.py"}
+
+
+-def _example_paths(*, include_optional: bool = False) -> list[Path]:
++def _example_paths(*, include_optional: bool = False, include_resource_heavy: bool = False) -> list[Path]:
+     paths = []
+     for path in sorted(PROJECT_ROOT.joinpath("examples").glob("*.py")):
+         if path.name in _EXCLUDED_FILES:
+             continue
+         if not include_optional and path.name in _OPTIONAL_EXAMPLES:
+             continue
++        if not include_resource_heavy and path.name in _RESOURCE_HEAVY_EXAMPLES:
++            continue
+         paths.append(path)
+     return paths
+
+@@ -141,6 +144,11 @@ def parse_args() -> argparse.Namespace:
+         action="store_true",
+         help="include slower or additional-model examples",
+     )
++    parser.add_argument(
++        "--include-resource-heavy",
++        action="store_true",
++        help="include examples that may download or synthesize the full catalog",
++    )
+     parser.add_argument(
+         "--fail-fast",
+         action="store_true",
+@@ -152,7 +160,10 @@ def parse_args() -> argparse.Namespace:
+ def main() -> int:
+     args = parse_args()
+     paths = _example_paths(include_optional=args.include_optional)
+-
++    paths = _example_paths(
++        include_optional=args.include_optional,
++        include_resource_heavy=args.include_resource_heavy,
++    )
+     if args.list:
+         for path in paths:
+             print(_label(path))
+diff --git a/tests/test_all_voices_example.py b/tests/test_all_voices_example.py
+new file mode 100644
+index 0000000..d3eb2cd
+--- /dev/null
++++ b/tests/test_all_voices_example.py
+@@ -0,0 +1,176 @@
++from __future__ import annotations
++
++import json
++from pathlib import Path
++
++import pytest
++
++import examples.all_voices as example
++from pipersynth.assets import VoiceMetadata
++
++
++def _voices() -> tuple[VoiceMetadata, ...]:
++    return (
++        VoiceMetadata(
++            id="en_US-test-medium",
++            name="English Test",
++            language_code="en_US",
++            language_family="en",
++            region="US",
++            quality="medium",
++            num_speakers=2,
++            speaker_id_map={"alice": 0, "bob": 1},
++            aliases=(),
++            source_revision="revision",
++        ),
++        VoiceMetadata(
++            id="bg_BG-test-medium",
++            name="Bulgarian Test",
++            language_code="bg_BG",
++            language_family="bg",
++            region="BG",
++            quality="medium",
++            num_speakers=1,
++            speaker_id_map={},
++            aliases=(),
++            source_revision="revision",
++        ),
++    )
++
++
++def _probe(locale: str) -> example.SpokenformProbe:
++    if locale == "en_US":
++        return example.SpokenformProbe("supported", "en-us", None)
++    return example.SpokenformProbe("unsupported", None, f"unsupported {locale}")
++
++
++def test_build_catalog_preserves_every_catalog_voice() -> None:
++    catalog = example.build_catalog(_voices())
++
++    assert [item.model_id for item in catalog.voices] == [
++        "bg_BG-test-medium",
++        "en_US-test-medium",
++    ]
++    assert len(catalog.voices) == 2
++
++
++def test_build_catalog_expands_every_numeric_speaker() -> None:
++    catalog = example.build_catalog(_voices())
++
++    assert [(item.model_id, item.speaker_id) for item in catalog.identities] == [
++        ("bg_BG-test-medium", 0),
++        ("en_US-test-medium", 0),
++        ("en_US-test-medium", 1),
++    ]
++    assert catalog.identities[-1].speaker_name == "bob"
++
++
++def test_single_speaker_uses_speaker_zero() -> None:
++    catalog = example.build_catalog(_voices())
++
++    assert catalog.identities[0].speaker_id == 0
++    assert catalog.identities[0].speaker_name is None
++
++
++def test_calibration_keys_match_piper_voice_identity_format() -> None:
++    catalog = example.build_catalog(_voices())
++
++    assert catalog.identities[-1].calibration_key == "piper:en_US-test-medium:medium:speaker-1"
++
++
++def test_language_summary_counts_catalog_voices_and_speaker_identities() -> None:
++    catalog = example.with_language_coverage(example.build_catalog(_voices()), _probe)
++
++    assert [(item.locale, item.catalog_voice_count, item.speaker_identity_count) for item in catalog.languages] == [
++        ("bg_BG", 1, 1),
++        ("en_US", 1, 2),
++    ]
++    assert catalog.languages[0].spokenform_status == "unsupported"
++
++
++def test_language_summary_is_deterministically_sorted() -> None:
++    catalog = example.with_language_coverage(example.build_catalog(_voices()), _probe)
++
++    assert [item.locale for item in catalog.languages] == ["bg_BG", "en_US"]
++
++
++def test_supported_and_unsupported_probe_results_are_recorded() -> None:
++    assert example.probe_spokenform_locale("definitely-not-a-locale").status in {
++        "supported",
++        "unsupported",
++        "unavailable",
++    }
++    catalog = example.with_language_coverage(example.build_catalog(_voices()), _probe)
++    assert catalog.languages[1].normalized_language == "en-us"
++    assert catalog.languages[0].error == "unsupported bg_BG"
++
++
++def test_missing_spokenform_does_not_break_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
++    def missing_import(_: str) -> example.SpokenformProbe:
++        return example.SpokenformProbe("unavailable", None, "missing")
++
++    catalog = example.with_language_coverage(example.build_catalog(_voices()), missing_import)
++
++    assert all(item.spokenform_status == "unavailable" for item in catalog.languages)
++
++
++def test_inventory_outputs_contain_all_catalog_voices_and_sorted_missing_text(tmp_path: Path) -> None:
++    catalog = example.with_language_coverage(example.build_catalog(_voices()), _probe)
++
++    outputs = example.write_inventory_outputs(catalog, tmp_path)
++
++    inventory = json.loads(outputs["inventory"].read_text())
++    languages = json.loads(outputs["languages"].read_text())
++    assert len(inventory["voices"]) == 2
++    assert len(inventory["identities"]) == 3
++    assert [item["locale"] for item in languages["languages"]] == ["bg_BG", "en_US"]
++    assert outputs["missing_text"].read_text() == "bg_BG\n"
++
++
++def test_list_only_prints_languages_before_voice_table_and_never_constructs_pipeline(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
++) -> None:
++    class FakeManager:
++        def __init__(self, *_args: object, **_kwargs: object) -> None:
++            pass
++
++        def list_voices(self, **_kwargs: object) -> tuple[VoiceMetadata, ...]:
++            return _voices()
++
++        def cache_info(self) -> object:
++            return type("Cache", (), {"directory": Path("/cache")})()
++
++    class SentinelPipeline:
++        def __init__(self, *_args: object, **_kwargs: object) -> None:
++            raise AssertionError("pipeline must not be constructed")
++
++    monkeypatch.setattr(example, "VoiceAssetManager", FakeManager)
++    monkeypatch.setattr(example, "PiperPipeline", SentinelPipeline)
++    monkeypatch.setattr(example, "with_language_coverage", lambda catalog: example.ShowcaseCatalog(catalog.voices, catalog.identities, example.build_language_coverage(catalog, _probe)))
++    monkeypatch.setattr(example, "artefact_dir", lambda: tmp_path)
++
++    assert example.main(["--list-only"]) == 0
++    output = capsys.readouterr().out
++    assert output.index("Piper locales") < output.index("No.  Voice/model")
++    assert (tmp_path / "all_voices_inventory.json").exists()
++
++
++def test_normal_mode_stops_before_download_when_languages_are_missing(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    class FakeManager:
++        def __init__(self, *_args: object, **_kwargs: object) -> None:
++            pass
++
++        def list_voices(self, **_kwargs: object) -> tuple[VoiceMetadata, ...]:
++            return _voices()
++
++        def cache_info(self) -> object:
++            return type("Cache", (), {"directory": Path("/cache")})()
++
++    monkeypatch.setattr(example, "VoiceAssetManager", FakeManager)
++    monkeypatch.setattr(example, "PiperPipeline", lambda *_args, **_kwargs: pytest.fail("download started"))
++    monkeypatch.setattr(example, "with_language_coverage", lambda catalog: example.ShowcaseCatalog(catalog.voices, catalog.identities, example.build_language_coverage(catalog, _probe)))
++    monkeypatch.setattr(example, "artefact_dir", lambda: tmp_path)
++
++    assert example.main([]) == 2
+diff --git a/tests/test_examples_runner.py b/tests/test_examples_runner.py
+index 60d2a8b..44f1f6f 100644
+--- a/tests/test_examples_runner.py
++++ b/tests/test_examples_runner.py
+@@ -77,6 +77,22 @@ def test_example_paths_exclude_helpers_and_optional_by_default(
+     ]
+
+
++
++def test_resource_heavy_examples_require_explicit_selection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++    _example_tree(tmp_path, "basic.py", "all_voices.py", "german.py")
++    monkeypatch.setattr(runner_module, "PROJECT_ROOT", tmp_path)
++    assert [path.name for path in runner_module._example_paths()] == ["basic.py"]
++    assert [path.name for path in runner_module._example_paths(include_optional=True)] == [
++        "basic.py",
++        "german.py",
++    ]
++    assert [
++        path.name
++        for path in runner_module._example_paths(
++            include_optional=True, include_resource_heavy=True
++        )
++    ] == ["all_voices.py", "basic.py", "german.py"]
++
+ def test_run_examples_injects_output_directory_and_validates_artifacts(
+     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+ ) -> None:
+diff --git a/tests/test_voice_loudness_benchmark.py b/tests/test_voice_loudness_benchmark.py
+index a8cacf0..73c052f 100644
+--- a/tests/test_voice_loudness_benchmark.py
++++ b/tests/test_voice_loudness_benchmark.py
+@@ -1,5 +1,9 @@
++import inspect
++from collections.abc import Mapping
++
+ import pytest
+
++import benchmarks.voice_loudness as benchmark
+ from benchmarks.voice_loudness import (
+     aggregate_measurements,
+     calibration_candidate,
+@@ -62,3 +66,53 @@ def test_positive_boost_is_headroom_limited_and_fallback_rejects_digits():
+         fallbacks={"xx": {"text": "one, two, three, four, five, six, seven, eight, nine, ten."}},
+     )
+     assert stimulus.fallback_used
++
++
++def test_preflight_resolves_each_distinct_locale_once(monkeypatch: pytest.MonkeyPatch) -> None:
++    entries = [
++        {"locale": "de_DE", "calibration_key": "de"},
++        {"locale": "en_US", "calibration_key": "en"},
++        {"locale": "en_US", "calibration_key": "en-2"},
++    ]
++    calls: list[str] = []
++    stimulus = benchmark.LoudnessStimulus("locale", "en", "source", "one", "test", False)
++    def resolve(locale: str, _fallbacks: Mapping[str, Mapping[str, object]]) -> benchmark.LoudnessStimulus:
++        calls.append(locale)
++        return benchmark.LoudnessStimulus(locale, "language", "source", "one", "test", False)
++    monkeypatch.setattr(benchmark, "resolve_count_stimulus", resolve)
++    preflight = benchmark.preflight_stimuli(entries, {})
++    assert calls == ["de_DE", "en_US"]
++    assert set(preflight.stimuli) == {"de_DE", "en_US"}
++    assert stimulus.locale == "locale"
++
++
++def test_preflight_collects_all_unsupported_locales_without_raising(monkeypatch: pytest.MonkeyPatch) -> None:
++    entries = [{"locale": "bg_BG"}, {"locale": "en_US"}, {"locale": "de_DE"}]
++    def resolve(locale: str, _fallbacks: Mapping[str, Mapping[str, object]]) -> benchmark.LoudnessStimulus:
++        if locale == "bg_BG":
++            raise benchmark.StimulusResolutionError("missing bg_BG")
++        return benchmark.LoudnessStimulus(locale, "language", "source", "one", "test", False)
++    monkeypatch.setattr(benchmark, "resolve_count_stimulus", resolve)
++    preflight = benchmark.preflight_stimuli(entries, {})
++    assert list(preflight.unsupported) == ["bg_BG"]
++    assert set(preflight.stimuli) == {"de_DE", "en_US"}
++
++
++def test_measure_repeats_requires_pre_resolved_stimulus() -> None:
++    parameter = inspect.signature(benchmark.measure_repeats).parameters["stimulus"]
++    assert parameter.default is inspect.Parameter.empty
++
++
++def test_unsupported_locale_blocks_every_matching_identity() -> None:
++    entries = [{"locale": "bg_BG", "calibration_key": "one"}, {"locale": "bg_BG", "calibration_key": "two"}]
++    failures = benchmark.stimulus_failures_for_entries(entries, {"bg_BG": "unsupported"})
++    assert [item["calibration_key"] for item in failures] == ["one", "two"]
++    assert all(item["status"] == "unsupported_stimulus" for item in failures)
++
++
++def test_coverage_does_not_double_count_explicit_failures() -> None:
++    entries = [{"calibration_key": "one"}, {"calibration_key": "two"}]
++    aggregates = [{"calibration_key": "one", "repeat_count": 3}]
++    report = benchmark.coverage_report(entries, aggregates, [{"calibration_key": "two"}], repeats=3)
++    assert report["catalog_identities_failed"] == 1
++    assert report["complete"] is False

@@ -1,0 +1,189 @@
+schema: releaseledger.entry-batch.v1
+operation: create
+schema_version: 1
+object_type: release_entry_batch
+release_version: v0.1.3
+git_base_ref: f505c023b8c335aaf17dd0623682e558348b9c8f
+git_base_sha: f505c023b8c335aaf17dd0623682e558348b9c8f
+git_head_ref: 6e1d76d55301e228bb9951a32c56e5c02e989525
+git_head_sha: 6e1d76d55301e228bb9951a32c56e5c02e989525
+include_merges: nontrivial
+entries:
+  - kind: added
+    summary:
+      Added calibrated voice leveling with LoudnessConfig and a validated offline
+      per-voice gain catalog
+    body:
+      "LoudnessConfig configures voice leveling, target LUFS, true-peak ceiling,
+      peak policy, and an explicit voice gain on pipeline and synthesis configuration.
+      Calibration lookup uses exact piper model, quality, and speaker identities from
+      a strictly validated offline catalog and applies one deterministic static gain
+      after legacy peak normalization. Synthesis never measures LUFS at runtime and
+      missing identities are zero-gain diagnostic no-ops."
+    status: accepted
+    source_refs:
+      - git:e4f1c6860f03ffec363d09ac2d03c0eeaad4aad4
+    paths:
+      - pipersynth/loudness_config.py
+      - pipersynth/voice_level.py
+      - pipersynth/voice.py
+      - pipersynth/__init__.py
+    sources:
+      - git:e4f1c6860f03ffec363d09ac2d03c0eeaad4aad4
+    prs: []
+    issues: []
+    contributors:
+      - "@holgern"
+  - kind: changed
+    summary: Changed complete-output rendering to apply target LUFS and true-peak ceiling policy for whole-document output
+    body:
+      "The AudioJob output policy forwards target_lufs, true_peak_ceiling_dbtp,
+      and peak_policy to composition for whole-document output. Streaming unit preparation
+      rejects target_lufs instead of normalizing units independently. Calibration mode,
+      key, gain, and source are recorded in inference metadata and AudioResult metadata."
+    status: accepted
+    source_refs: []
+    paths:
+      - pipersynth/audio_job.py
+      - pipersynth/pipeline.py
+    sources:
+      - git:e4f1c6860f03ffec363d09ac2d03c0eeaad4aad4
+    prs: []
+    issues: []
+    contributors:
+      - "@holgern"
+  - kind: added
+    summary: Added the packaged voice loudness calibration catalog for measured Piper speaker identities at -24 LUFS
+    body:
+      "The packaged catalog records BS.1770 gain, measured LUFS, and variability
+      for identities measured from corpus pipersynth-count-1-to-10-v1 with a -1 dBTP
+      calibration ceiling. docs/performance.md documents that Vietnamese and Chinese
+      identities must be remeasured after PiperG2P phoneme coverage changes."
+    status: accepted
+    source_refs:
+      - git:0208866f807084e80142feb3bd6caba9f2eb1af3
+    paths:
+      - pipersynth/data/voice_level_calibration.json
+      - docs/performance.md
+    sources:
+      - git:0208866f807084e80142feb3bd6caba9f2eb1af3
+      - git:e4f1c6860f03ffec363d09ac2d03c0eeaad4aad4
+    prs: []
+    issues: []
+    contributors:
+      - "@holgern"
+  - kind: quality
+    summary: Improved calibration promotion with coverage count validation and reviewed partial promotion
+    body:
+      "build_runtime_calibration rejects inconsistent coverage counts, promotes
+      explicitly reviewed statuses without the MAD gate, and requires an explicit opt-in
+      for partial coverage instead of silently accepting incomplete reports."
+    status: accepted
+    source_refs: []
+    paths:
+      - benchmarks/voice_loudness_calibration.py
+    sources:
+      - git:0208866f807084e80142feb3bd6caba9f2eb1af3
+      - git:b87a4e9bfde6d6c7c2d4f2d9c29a54cd9ff9e9a6
+    prs: []
+    issues: []
+    contributors:
+      - "@holgern"
+  - kind: quality
+    summary: Improved loudness benchmark measurement with isolated per-model workers and phase-tagged failure reporting
+    body:
+      "One pipeline is opened per model and reused across its speaker identities.
+      Each model runs in a fresh worker process with atomic JSON results. Failures carry
+      phase and error_type fields, non-finite metrics are rejected, and locale count
+      stimuli are resolved in a preflight before any synthesis."
+    status: accepted
+    source_refs:
+      - git:b87a4e9bfde6d6c7c2d4f2d9c29a54cd9ff9e9a6
+    paths:
+      - benchmarks/voice_loudness.py
+      - tests/test_voice_loudness_benchmark.py
+    sources:
+      - git:b87a4e9bfde6d6c7c2d4f2d9c29a54cd9ff9e9a6
+      - git:fd848fa659ea63768051c01313e3d82e79ec0d1b
+    prs: []
+    issues: []
+    contributors:
+      - "@holgern"
+  - kind: docs
+    summary: Documented catalog voices, per-speaker calibration identities, and Spokenform language gaps in an all-voices example
+    body:
+      "examples/all_voices.py prints the catalog without downloading voice models
+      and writes inventory, language, and missing-language reports below example-artefacts.
+      The full showcase is resource-heavy and runs only with an explicit runner flag."
+    status: accepted
+    source_refs:
+      - git:fd848fa659ea63768051c01313e3d82e79ec0d1b
+    paths:
+      - examples/all_voices.py
+      - examples/README.md
+      - examples/run_all.py
+    sources:
+      - git:fd848fa659ea63768051c01313e3d82e79ec0d1b
+    prs: []
+    issues: []
+    contributors:
+      - "@holgern"
+  - kind: changed
+    summary: Changed plan rendering to add prepare_plan_segments for canonical speech-only segments on the utterplan 0.2 line
+    body:
+      "PreparedAudioSegments renders immutable plan segments without semantic pause
+      padding or prosody for canonical output. Dependency bounds now require utterplan
+      0.2 and piperg2p 0.1.6 or newer."
+    status: accepted
+    source_refs:
+      - git:6e1d76d55301e228bb9951a32c56e5c02e989525
+    paths:
+      - pipersynth/pipeline.py
+      - pipersynth/__init__.py
+      - pyproject.toml
+    sources:
+      - git:6e1d76d55301e228bb9951a32c56e5c02e989525
+    prs: []
+    issues: []
+    contributors:
+      - "@holgern"
+  - kind: changed
+    summary: Improved prepared units with linguistic run provenance and morphological token annotations clipped to segment spans
+    body:
+      "Token annotations are clipped to the segment span instead of dropped when
+      they cross boundaries. Frontends that cannot accept token annotations now raise
+      PlanRenderingError instead of silently ignoring them."
+    status: accepted
+    source_refs: []
+    paths:
+      - pipersynth/plan_adapter.py
+    sources:
+      - git:6e1d76d55301e228bb9951a32c56e5c02e989525
+    prs: []
+    issues: []
+    contributors:
+      - "@holgern"
+  - kind: internal
+    internal: true
+    summary: Improved formatting and lint consistency across benchmarks, examples, and tests
+    body:
+      "Housekeeping only: pre-commit formatting and example test adjustments with
+      no user-visible behavior change. Retained as an internal entry for commit coverage
+      and excluded from the public changelog."
+    status: accepted
+    source_refs:
+      - git:99bb8364904dc20e34f2c90f53d09c54c1d99312
+    paths:
+      - benchmarks/voice_loudness.py
+      - examples/README.md
+      - examples/all_voices.py
+      - examples/run_all.py
+      - tests/test_all_voices_example.py
+      - tests/test_examples_runner.py
+      - tests/test_voice_loudness_benchmark.py
+    sources:
+      - git:99bb8364904dc20e34f2c90f53d09c54c1d99312
+    prs: []
+    issues: []
+    contributors:
+      - "@holgern"
