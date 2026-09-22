@@ -93,7 +93,9 @@ def _validate_policy(policy: Mapping[str, Any]) -> None:
         _finite(policy[field], f"policy.{field}")
 
 
-def validate_measurement_report(report: Mapping[str, Any]) -> None:
+def validate_measurement_report(
+    report: Mapping[str, Any], *, require_complete_coverage: bool = True
+) -> None:
     if report.get("schema") != 2:
         raise PromotionError("measurement report must use schema 2")
     if not isinstance(report.get("corpus"), str) or not report["corpus"]:
@@ -113,10 +115,26 @@ def validate_measurement_report(report: Mapping[str, Any]) -> None:
     coverage = report.get("coverage")
     if not isinstance(coverage, Mapping):
         raise PromotionError("measurement report requires coverage")
-    if coverage.get("catalog_identities_expected") != coverage.get("catalog_identities_measured"):
-        raise PromotionError("catalog identity coverage is incomplete")
-    if coverage.get("catalog_identities_failed") != 0 or coverage.get("complete") is not True:
-        raise PromotionError("catalog identity failures prevent promotion")
+    expected = coverage.get("catalog_identities_expected")
+    measured = coverage.get("catalog_identities_measured")
+    failed = coverage.get("catalog_identities_failed")
+    if not all(
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        for value in (expected, measured, failed)
+    ):
+        raise PromotionError("coverage identity counts must be non-negative integers")
+    if measured > expected or expected - measured > failed:
+        raise PromotionError("coverage identity counts are inconsistent")
+    complete = coverage.get("complete")
+    if complete is not True and complete is not False:
+        raise PromotionError("coverage.complete must be a boolean")
+    if require_complete_coverage:
+        if expected != measured:
+            raise PromotionError("catalog identity coverage is incomplete")
+        if failed != 0 or complete is not True:
+            raise PromotionError("catalog identity failures prevent promotion")
+    elif complete is True and (expected != measured or failed != 0):
+        raise PromotionError("complete coverage cannot contain missing or failed identities")
     aggregates = report.get("aggregates")
     if not isinstance(aggregates, list):
         raise PromotionError("measurement report requires aggregates")
@@ -154,22 +172,21 @@ def _runtime_record(
 
 
 def build_runtime_calibration(
-    report: Mapping[str, Any], *, reviewed_statuses: frozenset[str] = REVIEWED_STATUSES
+    report: Mapping[str, Any],
+    *,
+    reviewed_statuses: frozenset[str] = REVIEWED_STATUSES,
+    require_complete_coverage: bool = True,
 ) -> dict[str, Any]:
-    validate_measurement_report(report)
+    validate_measurement_report(report, require_complete_coverage=require_complete_coverage)
     policy = report["policy"]
     repeats = policy["repeats"]
     reference = _finite(policy["reference_lufs"], "policy.reference_lufs")
     ceiling = _finite(
         policy["calibration_peak_ceiling_dbtp"], "policy.calibration_peak_ceiling_dbtp"
     )
-    max_mad = _finite(policy["max_mad_lu"], "policy.max_mad_lu")
     voices: dict[str, dict[str, Any]] = {}
     for aggregate in report["aggregates"]:
         if aggregate["status"] not in reviewed_statuses or aggregate["repeat_count"] != repeats:
-            continue
-        mad = _finite(aggregate["mad_lu"], "aggregate.mad_lu")
-        if mad > max_mad:
             continue
         measured = _finite(aggregate["median_lufs"], "aggregate.median_lufs")
         true_peak = _finite(aggregate["max_true_peak_dbtp"], "aggregate.max_true_peak_dbtp")
@@ -204,11 +221,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--allow-partial", action="store_true")
     parser.add_argument("--review-status", action="append", default=[])
     args = parser.parse_args(argv)
     statuses = frozenset(args.review_status) if args.review_status else REVIEWED_STATUSES
     report = load_measurement_report(args.report)
-    catalog = build_runtime_calibration(report, reviewed_statuses=statuses)
+    catalog = build_runtime_calibration(
+        report,
+        reviewed_statuses=statuses,
+        require_complete_coverage=not args.allow_partial,
+    )
     if args.output.resolve() == PRODUCTION_CALIBRATION_PATH.resolve():
         raise SystemExit("refusing to overwrite packaged production calibration data")
     args.output.parent.mkdir(parents=True, exist_ok=True)
