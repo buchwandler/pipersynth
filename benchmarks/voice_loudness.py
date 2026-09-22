@@ -515,7 +515,7 @@ def run_model_isolated(
         )
         command = [
             sys.executable,
-            str(Path(__file__).resolve()),
+            Path(__file__).resolve().as_posix(),
             "--_worker-job",
             str(job_path),
             "--_worker-output",

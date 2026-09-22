@@ -138,14 +138,7 @@ def _validate_record(key: VoiceCalibrationKey, raw: Any) -> VoiceLevelCalibratio
     )
 
 
-def load_voice_calibration(path: Path | str) -> VoiceCalibrationCatalog:
-    """Load and strictly validate a runtime calibration catalog."""
-
-    source = Path(path)
-    try:
-        raw = json.loads(source.read_text(encoding="utf-8"), object_pairs_hook=_object_pairs)
-    except json.JSONDecodeError as exc:
-        raise CalibrationDataError(f"invalid calibration JSON: {source}") from exc
+def _validate_catalog(raw: Any) -> VoiceCalibrationCatalog:
     if not isinstance(raw, Mapping):
         raise CalibrationDataError("calibration catalog must be an object")
     unknown = set(raw) - _TOP_FIELDS
@@ -183,18 +176,26 @@ def load_voice_calibration(path: Path | str) -> VoiceCalibrationCatalog:
     )
 
 
+def load_voice_calibration(path: Path | str) -> VoiceCalibrationCatalog:
+    """Load and strictly validate a runtime calibration catalog."""
+
+    source = Path(path)
+    try:
+        raw = json.loads(source.read_text(encoding="utf-8"), object_pairs_hook=_object_pairs)
+    except json.JSONDecodeError as exc:
+        raise CalibrationDataError(f"invalid calibration JSON: {source}") from exc
+    return _validate_catalog(raw)
+
+
 @lru_cache(maxsize=1)
 def default_voice_calibration() -> VoiceCalibrationCatalog:
     resource = files("pipersynth").joinpath("data", "voice_level_calibration.json")
-    with resource.open("r", encoding="utf-8") as handle:
-        raw = json.load(handle, object_pairs_hook=_object_pairs)
-    # Reuse the same validation path while keeping packaged-resource loading portable.
-    import tempfile
-
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as handle:
-        json.dump(raw, handle)
-        handle.flush()
-        return load_voice_calibration(handle.name)
+    try:
+        with resource.open("r", encoding="utf-8") as handle:
+            raw = json.load(handle, object_pairs_hook=_object_pairs)
+    except json.JSONDecodeError as exc:
+        raise CalibrationDataError(f"invalid calibration JSON: {resource}") from exc
+    return _validate_catalog(raw)
 
 
 def apply_voice_level_calibration(
