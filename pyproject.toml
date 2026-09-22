@@ -12,8 +12,8 @@ license = {text = "Apache-2.0"}
 authors = [{name = "PiperSynth contributors"}]
 dependencies = [
   "numpy>=1.23",
-  "utterplan>=0.1,<0.2",
-  "piperg2p",
+  "utterplan>=0.2.0,<0.3",
+  "piperg2p>=0.1.6,<0.2",
   "onnxvoice>=0.1,<0.2",
   "audiocompose>=0.1,<0.2",
   "audiosig>=0.1.4,<0.2",

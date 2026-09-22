@@ -18,7 +18,12 @@ from utterplan import (
 )
 
 from .audio import silence_samples
-from .audio_job import PiperAudioJobContext, build_audio_job_context, render_segment
+from .audio_job import (
+    PiperAudioJobContext,
+    RenderedPiperSegment,
+    build_audio_job_context,
+    render_segment,
+)
 from .composition import audio_result_from_composition
 from .config import GenerationConfig, PipelineConfig
 from .diagnostics import TimingDiagnostics
@@ -29,6 +34,84 @@ from .plan_adapter import prepare_plan as adapt_plan
 from .planning import inspect_voice_config, planner_config_from_pipersynth
 from .types import AudioResult, AudioUnitDescriptor, AudioUnitResult, SynthesisConfig
 from .voice import PiperVoice
+
+
+class PreparedAudioSegments:
+    """Prepared Piper segments rendered without semantic pause padding or prosody."""
+
+    def __init__(
+        self,
+        pipeline: PiperPipeline,
+        plan: UtterancePlan,
+        prepared_units: tuple[PreparedPiperUnit, ...],
+    ) -> None:
+        self._pipeline = pipeline
+        self._plan = plan
+        self._prepared = {
+            segment.plan_segment_id: segment for unit in prepared_units for segment in unit.segments
+        }
+        self._segments = {segment.id: segment for segment in plan.segments}
+        self._closed = False
+        self._render_started = False
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise VoiceClosedError("PreparedAudioSegments is closed")
+
+    def render(
+        self,
+        *,
+        segment_ids: tuple[str, ...] | list[str] | None = None,
+    ) -> Iterator[RenderedPiperSegment]:
+        self._ensure_open()
+        if self._render_started:
+            raise RuntimeError("PreparedAudioSegments supports one render pass only")
+        requested = (
+            tuple(segment_ids)
+            if segment_ids is not None
+            else tuple(segment.id for segment in self._plan.segments)
+        )
+        if len(set(requested)) != len(requested):
+            raise ValueError("segment_ids contains duplicate segment IDs")
+        missing = [
+            segment_id
+            for segment_id in requested
+            if segment_id not in self._prepared or segment_id not in self._segments
+        ]
+        if missing:
+            raise KeyError(f"unknown plan segment ID {missing[0]!r}")
+        self._render_started = True
+        return self._iterate(requested)
+
+    def _iterate(self, segment_ids: tuple[str, ...]) -> Iterator[RenderedPiperSegment]:
+        try:
+            for segment_id in segment_ids:
+                prepared = self._prepared[segment_id]
+                segment = self._segments[segment_id]
+                rendered = render_segment(
+                    prepared,
+                    unit_id=segment_id,
+                    spoken_start=segment.spoken_start,
+                    spoken_end=segment.spoken_end,
+                    voice=self._pipeline.voice,
+                )
+                yield replace(
+                    rendered,
+                    pause_before_seconds=0.0,
+                    pause_after_seconds=0.0,
+                )
+        finally:
+            self._render_started = False
+
+    def close(self) -> None:
+        self._closed = True
+
+    def __enter__(self) -> PreparedAudioSegments:
+        self._ensure_open()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
 
 class PreparedAudioUnits:
@@ -407,7 +490,13 @@ class PiperPipeline:
             loudness=loudness or LoudnessConfig(),
         )
 
-    def prepare_plan(self, plan: UtterancePlan, **render_overrides: Any) -> PreparedAudioUnits:
+    def prepare_plan(
+        self,
+        plan: UtterancePlan,
+        *,
+        canonical: bool = False,
+        **render_overrides: Any,
+    ) -> PreparedAudioUnits:
         self._ensure_open()
         planner_fields = {
             "language",
@@ -440,11 +529,23 @@ class PiperPipeline:
             loudness=effective.loudness,
             directive_policy=effective.directive_policy,
             language_policy=effective.language_policy,
+            canonical=canonical,
             language_aliases=effective.language_aliases,
         )
         self._last_timing["g2p_ms"] = (time.perf_counter() - started) * 1000
         result = PreparedAudioUnits(self, plan, prepared, effective.generation)
         self._prepared.append(result)
+        return result
+
+    def prepare_plan_segments(
+        self,
+        plan: UtterancePlan,
+        **render_overrides: Any,
+    ) -> PreparedAudioSegments:
+        """Prepare canonical speech-only rendering for immutable plan segments."""
+        prepared_units = self.prepare_plan(plan, canonical=True, **render_overrides)
+        result = PreparedAudioSegments(self, plan, prepared_units._prepared_units)
+        prepared_units.close()
         return result
 
     def _build_audio_job_context(

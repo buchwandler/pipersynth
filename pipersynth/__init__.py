@@ -48,7 +48,7 @@ from .errors import (
     VoiceNotFoundError,
 )
 from .loudness_config import LoudnessConfig, PeakPolicy, VoiceLevelingMode, coerce_loudness
-from .pipeline import PiperPipeline, PreparedAudioUnits, build_pipeline
+from .pipeline import PiperPipeline, PreparedAudioSegments, PreparedAudioUnits, build_pipeline
 from .preparation import IdentityTextPreparer, PreparedTextResult, SpokenformTextPreparer
 from .session import ProviderConfig, available_providers
 from .types import AudioChunk, AudioResult, AudioUnitDescriptor, AudioUnitResult, SynthesisConfig
@@ -112,6 +112,7 @@ __all__ = [
     "OfflineAssetError",
     "PiperVoice",
     "PipelineConfig",
+    "PreparedAudioSegments",
     "PreparedAudioUnits",
     "PreparedTextResult",
     "ProviderConfig",

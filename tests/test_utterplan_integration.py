@@ -194,3 +194,21 @@ def test_render_plan_rejects_malformed_plan() -> None:
     with pytest.raises(PlanValidationError):
         pipeline.render_plan(malformed)
     pipeline.close()
+
+
+def test_canonical_plan_segments_omit_semantic_pauses():
+    pipeline, _voice = make_pipeline()
+    plan = pipeline.plan(
+        "One. Two.",
+        unit="sentence",
+        pauses=PauseConfig(mode="manual", sentence=0.2),
+    )
+
+    with pipeline.prepare_plan_segments(plan) as prepared:
+        rendered = list(prepared.render())
+
+    assert [item.segment_id for item in rendered] == [segment.id for segment in plan.segments]
+    assert all(item.pause_before_seconds == 0.0 for item in rendered)
+    assert all(item.pause_after_seconds == 0.0 for item in rendered)
+    assert all(item.audio.size > 0 for item in rendered)
+    pipeline.close()

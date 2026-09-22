@@ -9,6 +9,7 @@ from utterplan import PlanSegment, UtterancePlan, normalize_language
 
 from .config import GenerationConfig
 from .errors import (
+    PlanRenderingError,
     UnsupportedPlanDirectiveError,
     UnsupportedPlanLanguageError,
     VoiceBindingError,
@@ -119,13 +120,14 @@ def _segment_synthesis(
     generation: GenerationConfig,
     loudness: LoudnessConfig,
     directive_policy: str,
+    canonical: bool = False,
 ) -> tuple[SynthesisConfig, list[str]]:
     warnings: list[str] = []
     speaker_id = _resolve_voice_speaker(plan, segment, voice, generation)
     length_scale = generation.length_scale
     volume = generation.volume
     prosody = segment.directives.prosody
-    if prosody is not None:
+    if not canonical and prosody is not None:
         if prosody.rate is not None:
             try:
                 rate = _number(prosody.rate, name="prosody.rate")
@@ -157,7 +159,7 @@ def _segment_synthesis(
             )
             if warning:
                 warnings.append(warning)
-    if segment.directives.emphasis is not None:
+    if not canonical and segment.directives.emphasis is not None:
         warning = _policy_issue(directive_policy, "PiperSynth does not support emphasis directives")
         if warning:
             warnings.append(warning)
@@ -185,17 +187,20 @@ def _token_annotations(plan: UtterancePlan, segment: PlanSegment) -> tuple[dict[
     result = []
     for index in segment.token_indices:
         token = plan.tokens[index]
-        if token.spoken_start < segment.spoken_start or token.spoken_end > segment.spoken_end:
+        start = max(token.spoken_start, segment.spoken_start)
+        end = min(token.spoken_end, segment.spoken_end)
+        if start >= end:
             continue
         result.append(
             {
-                "start": token.spoken_start - segment.spoken_start,
-                "end": token.spoken_end - segment.spoken_start,
+                "start": start - segment.spoken_start,
+                "end": end - segment.spoken_start,
                 "text": token.text,
                 "pos": token.pos,
                 "tag": token.tag,
                 "lemma": token.lemma,
                 "language": token.language,
+                "morph": token.morph,
             }
         )
     return tuple(result)
@@ -210,13 +215,35 @@ def _sentences(result: Any) -> tuple[Any, ...]:
     return sentences
 
 
+def _linguistic_provenance(plan: UtterancePlan, segment: PlanSegment) -> tuple[dict[str, Any], ...]:
+    referenced_indices = set(segment.token_indices)
+    if not referenced_indices:
+        return ()
+    return tuple(
+        {
+            "language_run_id": run.language_run_id,
+            "provider": run.provider,
+            "model": run.model,
+            "provider_version": run.provider_version,
+            "model_version": run.model_version,
+            "token_range": (run.token_start, run.token_end),
+        }
+        for run in plan.linguistic_runs
+        if any(run.token_start <= index < run.token_end for index in referenced_indices)
+    )
+
+
 def _phonemize(frontend: Any, text: str, annotations: tuple[dict[str, Any], ...]) -> Any:
+    if not annotations:
+        return frontend.phonemize_prepared(text)
     parameters = inspect.signature(frontend.phonemize_prepared).parameters
-    if "annotations" in parameters or any(
+    if "annotations" not in parameters and not any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
     ):
-        return frontend.phonemize_prepared(text, annotations=annotations)
-    return frontend.phonemize_prepared(text)
+        raise PlanRenderingError(
+            "the active Piper frontend cannot accept Utterplan token annotations"
+        )
+    return frontend.phonemize_prepared(text, annotations=annotations)
 
 
 def prepare_plan(
@@ -228,6 +255,7 @@ def prepare_plan(
     directive_policy: Literal["error", "warn", "ignore"] = "error",
     language_policy: Literal["strict", "allow"] = "strict",
     language_aliases: Mapping[str, str] | None = None,
+    canonical: bool = False,
 ) -> tuple[PreparedPiperUnit, ...]:
     """Adapt a validated semantic plan into renderer-local Piper records."""
 
@@ -246,7 +274,13 @@ def prepare_plan(
                 else normalize_language(segment.language, aliases)
             )
             synthesis, directive_warnings = _segment_synthesis(
-                plan, segment, voice, generation, effective_loudness, directive_policy
+                plan,
+                segment,
+                voice,
+                generation,
+                effective_loudness,
+                directive_policy,
+                canonical=canonical,
             )
             pronunciation = segment.directives.pronunciation
             if pronunciation is not None and pronunciation.alphabet not in {"ipa", "espeak-ipa3"}:
@@ -279,7 +313,10 @@ def prepare_plan(
                     pause_before_seconds=segment.pause_before.seconds,
                     pause_after_seconds=segment.pause_after.seconds,
                     warnings=warnings,
-                    metadata={"frontend_diagnostics": getattr(result, "diagnostics", None)},
+                    metadata={
+                        "frontend_diagnostics": getattr(result, "diagnostics", None),
+                        "utterplan_linguistics": _linguistic_provenance(plan, segment),
+                    },
                     synthesis=synthesis,
                 )
             )
