@@ -7,10 +7,16 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 
 import pipersynth
 import pipersynth.convenience as convenience
-from pipersynth import RenderedSegment, SynthesisConfig, VoiceLevelConfig
+from pipersynth import (
+    RenderedSegment,
+    SynthesisConfig,
+    TextChunkingConfig,
+    VoiceLevelConfig,
+)
 
 
 class FakePiperVoice:
@@ -97,6 +103,7 @@ def test_convenience_synthesizes_prepared_text_through_piper_voice(monkeypatch) 
         output_gain=0.8,
         voice_level=VoiceLevelConfig(mode="calibrated", gain_db=1.0),
         offline=True,
+        chunking=TextChunkingConfig(mode="none"),
     )
     assert isinstance(result, RenderedSegment)
     assert result.text == "Prepared text."
@@ -107,6 +114,7 @@ def test_convenience_synthesizes_prepared_text_through_piper_voice(monkeypatch) 
     assert request[0] == "Prepared text."
     assert request[1]["language"] == "en-us"
     assert request[1]["id"] == "item-1"
+    assert request[1]["chunking"] == TextChunkingConfig(mode="none")
     assert request[1]["speaker"] == "speaker_2"
     config = request[1]["config"]
     assert isinstance(config, SynthesisConfig)
@@ -122,11 +130,87 @@ def test_convenience_wav_helper_writes_independent_result(monkeypatch, tmp_path:
         tmp_path / "nested" / "speech.wav",
         voice="test-voice",
         language="en-us",
+        chunking=TextChunkingConfig(mode="none"),
     )
     assert output.exists()
+    assert FakePiperVoice.request is not None
+    assert FakePiperVoice.request[1]["chunking"] == TextChunkingConfig(mode="none")
     with wave.open(str(output), "rb") as wav:
         assert wav.getnchannels() == 1
         assert wav.getsampwidth() == 2
         assert wav.getframerate() == 22050
         assert wav.getnframes() == 2
     assert not tuple(output.parent.glob("*.tmp"))
+
+
+def test_public_text_chunking_config_validates_mode_and_limit() -> None:
+    assert pipersynth.TextChunkingConfig is TextChunkingConfig
+    assert TextChunkingConfig().mode == "sentence"
+    assert TextChunkingConfig(mode="sentence", max_chars=120).max_chars == 120
+    assert TextChunkingConfig(mode="none").max_chars is None
+
+    with pytest.raises(ValueError, match="mode"):
+        TextChunkingConfig(mode="all")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="positive integer"):
+        TextChunkingConfig(max_chars=0)
+    with pytest.raises(ValueError, match="positive integer"):
+        TextChunkingConfig(max_chars=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="requires sentence"):
+        TextChunkingConfig(mode="none", max_chars=10)
+
+
+def test_none_chunking_synthesizes_in_subprocess_without_phrasplit() -> None:
+    command = """\\
+import builtins
+from types import SimpleNamespace
+
+original_import = builtins.__import__
+def block_phrasplit(name, *args, **kwargs):
+    if name.partition(".")[0] == "phrasplit":
+        raise AssertionError("Phrasplit must not be imported in none mode")
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = block_phrasplit
+
+import numpy as np
+from piperg2p import PhonemeSentence, VoiceConfig
+from pipersynth import PiperVoice, TextChunkingConfig
+
+config = VoiceConfig.from_dict({
+    "num_symbols": 4,
+    "num_speakers": 1,
+    "audio": {"sample_rate": 22050},
+    "phoneme_type": "text",
+    "espeak": {"voice": "en-us"},
+    "phoneme_id_map": {"_": [0], "^": [1], "$": [2], "a": [3]},
+})
+class Runtime:
+    def infer(self, ids, **kwargs):
+        return SimpleNamespace(
+            audio=np.array([0.1], dtype=np.float32), sample_rate=22050
+        )
+class G2P:
+    def phonemize_prepared(self, text, **kwargs):
+        return SimpleNamespace(
+            sentences=(PhonemeSentence(("a",), (3,)),),
+            warnings=(),
+            diagnostics=None,
+        )
+voice = PiperVoice(
+    Runtime(), config, g2p_factory=lambda language, *, config: G2P()
+ )
+result = voice.synthesize_text(
+    "prepared text",
+    language="en-us",
+    chunking=TextChunkingConfig(mode="none"),
+ )
+assert result.audio.size == 1
+assert [chunk.index for chunk in result.chunks] == [0]
+voice.close()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", command],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

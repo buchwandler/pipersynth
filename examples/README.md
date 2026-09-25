@@ -38,4 +38,5 @@ For a multi-speaker model, pass a numeric ID or an actual model speaker name wit
 - `homographs.py` forwards a source-aligned pronunciation override.
 - `punctuation.py` shows PiperG2P processing prepared punctuation.
 - `stream.py` writes request-local sentence-group chunks incrementally.
+- `long_text.py` uses bounded request-local text chunks and reports exact source ranges.
 - `all_voices.py` lists catalog metadata and optionally synthesizes one voice.

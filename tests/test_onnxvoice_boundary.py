@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from piperg2p import PiperFrontend, VoiceConfig
+from piperg2p import VoiceConfig
 
 import pipersynth._onnxvoice as boundary
 from pipersynth import PiperVoice, SynthesisConfig
@@ -55,7 +55,7 @@ class FakeRuntime:
 def test_voice_passes_piper_policy_to_onnxvoice_and_summarizes_outputs():
     config = voice_config()
     runtime = FakeRuntime()
-    voice = PiperVoice(runtime, config, PiperFrontend(config))
+    voice = PiperVoice(runtime, config)
 
     inference = voice._infer_ids(
         [1, 3],
@@ -81,7 +81,7 @@ def test_voice_passes_piper_policy_to_onnxvoice_and_summarizes_outputs():
 
 def test_voice_wraps_inference_failure_and_preserves_cause():
     error = RuntimeError("runtime failure")
-    voice = PiperVoice(FakeRuntime(failure=error), voice_config(), PiperFrontend(voice_config()))
+    voice = PiperVoice(FakeRuntime(failure=error), voice_config())
 
     with pytest.raises(ModelInferenceError) as raised:
         voice.synthesize_ids([1, 3])
@@ -90,9 +90,7 @@ def test_voice_wraps_inference_failure_and_preserves_cause():
 
 
 def test_voice_rejects_native_sample_rate_mismatch():
-    voice = PiperVoice(
-        FakeRuntime(sample_rate=16000), voice_config(), PiperFrontend(voice_config())
-    )
+    voice = PiperVoice(FakeRuntime(sample_rate=16000), voice_config())
 
     with pytest.raises(ModelInferenceError, match="sample rate"):
         voice.synthesize_ids([1, 3])

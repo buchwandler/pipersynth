@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Literal
 
 import numpy as np
 
@@ -153,6 +153,29 @@ class SynthesisConfig:
         _finite(self.output_gain, "output_gain", minimum=0.0)
         if not isinstance(self.voice_level, VoiceLevelConfig):
             raise InvalidSynthesisConfigError("voice_level must be a VoiceLevelConfig")
+
+
+TextSplitMode = Literal["sentence", "none"]
+
+
+@dataclass(frozen=True, slots=True)
+class TextChunkingConfig:
+    """Request-local prepared-text segmentation policy."""
+
+    mode: TextSplitMode = "sentence"
+    max_chars: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("sentence", "none"):
+            raise ValueError("mode must be 'sentence' or 'none'")
+        if self.max_chars is not None and (
+            isinstance(self.max_chars, bool)
+            or not isinstance(self.max_chars, int)
+            or self.max_chars < 1
+        ):
+            raise ValueError("max_chars must be a positive integer or None")
+        if self.mode == "none" and self.max_chars is not None:
+            raise ValueError("max_chars requires sentence chunking")
 
 
 @dataclass(slots=True)

@@ -6,10 +6,12 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from piperg2p import get_g2p
+
 from .asset_progress import AssetProgressEvent
 from .errors import InvalidSynthesisConfigError
 from .session import ProviderConfig, ProviderSpec
-from .types import RenderedSegment, SynthesisConfig
+from .types import RenderedSegment, SynthesisConfig, TextChunkingConfig
 from .voice import PiperVoice
 from .voice_level import VoiceLevelConfig
 
@@ -44,7 +46,9 @@ def _render_prepared_text(
     providers: Sequence[ProviderSpec | ProviderConfig] | None,
     provider_options: dict[str, Any] | None,
     session_options: Any | None,
-    frontend_options: dict[str, Any] | None,
+    g2p_factory: Callable[..., Any],
+    g2p_options: dict[str, Any] | None,
+    chunking: TextChunkingConfig | None,
     cache_dir: str | Path | None,
     offline: bool | None,
     refresh_catalog: bool,
@@ -66,7 +70,8 @@ def _render_prepared_text(
         providers=providers,
         provider_options=provider_options,
         session_options=session_options,
-        frontend_options=frontend_options,
+        g2p_factory=g2p_factory,
+        g2p_options=g2p_options,
         progress=progress,
     ) as engine:
         return engine.synthesize_text(
@@ -75,6 +80,7 @@ def _render_prepared_text(
             id=id,
             speaker=speaker,
             config=config,
+            chunking=chunking,
         )
 
 
@@ -94,7 +100,9 @@ def synthesize(
     providers: Sequence[ProviderSpec | ProviderConfig] | None = None,
     provider_options: dict[str, Any] | None = None,
     session_options: Any | None = None,
-    frontend_options: dict[str, Any] | None = None,
+    g2p_factory: Callable[..., Any] = get_g2p,
+    g2p_options: dict[str, Any] | None = None,
+    chunking: TextChunkingConfig | None = None,
     cache_dir: str | Path | None = None,
     offline: bool | None = None,
     refresh_catalog: bool = False,
@@ -120,7 +128,9 @@ def synthesize(
         providers=providers,
         provider_options=provider_options,
         session_options=session_options,
-        frontend_options=frontend_options,
+        g2p_factory=g2p_factory,
+        g2p_options=g2p_options,
+        chunking=chunking,
         cache_dir=cache_dir,
         offline=offline,
         refresh_catalog=refresh_catalog,
@@ -164,7 +174,9 @@ def synthesize_to_wav(
     providers: Sequence[ProviderSpec | ProviderConfig] | None = None,
     provider_options: dict[str, Any] | None = None,
     session_options: Any | None = None,
-    frontend_options: dict[str, Any] | None = None,
+    g2p_factory: Callable[..., Any] = get_g2p,
+    g2p_options: dict[str, Any] | None = None,
+    chunking: TextChunkingConfig | None = None,
     cache_dir: str | Path | None = None,
     offline: bool | None = None,
     refresh_catalog: bool = False,
@@ -190,7 +202,9 @@ def synthesize_to_wav(
         providers=providers,
         provider_options=provider_options,
         session_options=session_options,
-        frontend_options=frontend_options,
+        g2p_factory=g2p_factory,
+        g2p_options=g2p_options,
+        chunking=chunking,
         cache_dir=cache_dir,
         offline=offline,
         refresh_catalog=refresh_catalog,

@@ -68,7 +68,7 @@ def test_piper_voice_applies_explicit_engine_gain_and_output_gain() -> None:
             )
 
     config = voice_config()
-    voice = PiperVoice(Runtime(), config, frontend=object())  # type: ignore[arg-type]
+    voice = PiperVoice(Runtime(), config)
     audio = voice.synthesize_ids(
         [1],
         config=SynthesisConfig(
@@ -88,7 +88,6 @@ def test_managed_calibration_key_uses_resolved_speaker_name() -> None:
     voice = PiperVoice(
         SimpleNamespace(infer=lambda *args, **kwargs: None),
         config,
-        frontend=object(),  # type: ignore[arg-type]
         installation=installation,
     )
     assert voice.calibration_key("alice") == VoiceCalibrationKey(

@@ -3,19 +3,20 @@ schema_version: 2
 object_type: release_entry
 versioning:
   schema_version: 1
-  revision: 1
+  revision: 3
 entry_id: entry-0004
 release_version: v0.1.3
 kind: quality
 summary:
-  Improved calibration promotion with coverage count validation and reviewed
-  partial promotion
+  Improved calibration promotion with coverage validation and explicit partial-coverage
+  review
 status: accepted
 audience: null
 scopes: []
 source_refs: []
 paths:
-  - benchmarks/voice_loudness_calibration.py
+  - benchmarks/promote_voice_calibration.py
+  - tests/test_voice_level_benchmark.py
 issues: []
 prs: []
 sources:
@@ -28,4 +29,4 @@ internal: false
 order: 4
 ---
 
-build_runtime_calibration rejects inconsistent coverage counts, promotes explicitly reviewed statuses without the MAD gate, and requires an explicit opt-in for partial coverage instead of silently accepting incomplete reports.
+Candidate catalog generation checks that reported identity counts, completeness flags, repeat counts, policy-derived gains, and eligibility statuses agree. Partial coverage requires an explicit opt-in, and promotion writes a separate candidate rather than the packaged production catalog.

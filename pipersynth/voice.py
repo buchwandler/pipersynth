@@ -7,7 +7,14 @@ from typing import Any
 from uuid import uuid4
 
 import numpy as np
-from piperg2p import OverrideSpan, PiperFrontend, TokenAnnotation, VoiceConfig, get_g2p
+from piperg2p import (
+    OverrideSpan,
+    RawPhonemeSegment,
+    TokenAnnotation,
+    VoiceConfig,
+    get_g2p,
+    parse_raw_blocks,
+)
 
 from ._onnxvoice import (
     ResolvedPiperVoice,
@@ -30,10 +37,13 @@ from .errors import (
 )
 from .session import ProviderConfig, ProviderSpec
 from .types import (
+    LinguisticToken,
+    PronunciationOverride,
     RenderedChunk,
     RenderedSegment,
     SynthesisConfig,
     SynthesisSegment,
+    TextChunkingConfig,
 )
 from .voice_level import (
     VoiceCalibrationKey,
@@ -69,28 +79,179 @@ class PiperInference:
     output_summary: Mapping[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class _TextPart:
+    segment: SynthesisSegment
+    metadata: Mapping[str, Any]
+
+
+def _remap_segment(segment: SynthesisSegment, start: int, end: int) -> SynthesisSegment:
+    overrides = tuple(
+        PronunciationOverride(
+            override.start - start,
+            override.end - start,
+            override.phonemes,
+            override.language,
+            override.stress,
+        )
+        for override in segment.pronunciation_overrides
+        if start <= override.start and override.end <= end
+    )
+    annotations = tuple(
+        LinguisticToken(
+            token.start - start,
+            token.end - start,
+            token.text,
+            token.pos,
+            token.tag,
+            token.lemma,
+            token.language,
+            token.morph,
+        )
+        for token in segment.annotations
+        if start <= token.start and token.end <= end
+    )
+    return SynthesisSegment(
+        id=segment.id,
+        text=segment.text[start:end],
+        language=segment.language,
+        speaker=segment.speaker,
+        pronunciation_overrides=overrides,
+        annotations=annotations,
+    )
+
+
+def _request_text_parts(
+    segment: SynthesisSegment, chunking: TextChunkingConfig | None
+) -> tuple[_TextPart, ...]:
+    chunking = chunking if chunking is not None else TextChunkingConfig()
+    if not isinstance(chunking, TextChunkingConfig):
+        raise TypeError("chunking must be a TextChunkingConfig")
+    if chunking.mode == "none":
+        return (
+            _TextPart(
+                segment,
+                {
+                    "split_mode": "none",
+                    "char_start": 0,
+                    "char_end": len(segment.text),
+                },
+            ),
+        )
+
+    from phrasplit import split_with_offsets_with_diagnostics
+
+    result = split_with_offsets_with_diagnostics(
+        segment.text,
+        mode="sentence",
+        use_spacy=False,
+        language=segment.language,
+        max_chars=chunking.max_chars,
+    )
+    spans = tuple(result.segments)
+    backend = f"phrasplit-{result.diagnostics.backend}"
+    split_diagnostics = {
+        "backend": result.diagnostics.backend,
+        "language": result.diagnostics.language,
+        "analysis_source": result.diagnostics.analysis_source,
+        "model_owned_by_caller": result.diagnostics.model_owned_by_caller,
+    }
+    protected_ranges = [
+        (override.start, override.end) for override in segment.pronunciation_overrides
+    ]
+    protected_ranges.extend(
+        (annotation.start, annotation.end) for annotation in segment.annotations
+    )
+    protected_ranges.extend(
+        (raw.source_start, raw.source_end)
+        for raw in parse_raw_blocks(segment.text)
+        if isinstance(raw, RawPhonemeSegment) and raw.source_end is not None
+    )
+    if not spans:
+        return (
+            _TextPart(
+                segment,
+                {
+                    "split_mode": "sentence",
+                    "split_backend": backend,
+                    "split_diagnostics": split_diagnostics,
+                    "char_start": 0,
+                    "char_end": len(segment.text),
+                    "split_id": None,
+                },
+            ),
+        )
+
+    candidate_ends = [span.char_end for span in spans]
+    candidate_ends[-1] = len(segment.text)
+    part_ends = [
+        boundary
+        for boundary in candidate_ends
+        if not any(start < boundary < end for start, end in protected_ranges)
+    ]
+    parts: list[_TextPart] = []
+    part_start = 0
+    for part_end in part_ends:
+        if part_end <= part_start:
+            continue
+        split_ids = tuple(
+            span.id for span in spans if span.char_end > part_start and span.char_start < part_end
+        )
+        part_segment = _remap_segment(segment, part_start, part_end)
+        parts.append(
+            _TextPart(
+                part_segment,
+                {
+                    "split_mode": "sentence",
+                    "split_backend": backend,
+                    "split_diagnostics": split_diagnostics,
+                    "char_start": part_start,
+                    "char_end": part_end,
+                    "split_id": "+".join(split_ids) if split_ids else None,
+                },
+            )
+        )
+        part_start = part_end
+    if part_start < len(segment.text):
+        parts.append(
+            _TextPart(
+                _remap_segment(segment, part_start, len(segment.text)),
+                {
+                    "split_mode": "sentence",
+                    "split_backend": backend,
+                    "split_diagnostics": split_diagnostics,
+                    "char_start": part_start,
+                    "char_end": len(segment.text),
+                    "split_id": None,
+                },
+            )
+        )
+    return tuple(parts)
+
+
 class PiperVoice:
-    """Piper policy and frontend wrapped around an OnnxVoice runtime."""
+    """Piper policy using PiperG2P around an OnnxVoice runtime."""
 
     def __init__(
         self,
         runtime: Any,
         config: VoiceConfig,
-        frontend: PiperFrontend,
         *,
-        owns_frontend: bool = False,
+        g2p_factory: Callable[..., Any] = get_g2p,
+        g2p_options: Mapping[str, Any] | None = None,
         model_path: str | Path | None = None,
         config_path: str | Path | None = None,
         installation: Any | None = None,
     ) -> None:
         self.runtime = runtime
         self.config = config
-        self.frontend = frontend
-        self._owns_frontend = owns_frontend
+        self._g2p_factory = g2p_factory
+        self._g2p_options = dict(g2p_options or {})
         self.model_path = Path(model_path) if model_path is not None else None
         self.config_path = Path(config_path) if config_path is not None else None
         self.installation = installation
         self._closed = False
+        self._last_g2p_diagnostics: Any | None = None
 
         self._last_voice_level_application: VoiceLevelApplication | None = None
 
@@ -102,29 +263,21 @@ class PiperVoice:
         providers: Sequence[ProviderSpec | ProviderConfig] | None = None,
         provider_options: Mapping[str, Any] | None = None,
         session_options: Any | None = None,
-        frontend_options: Mapping[str, Any] | None = None,
-        frontend: PiperFrontend | None = None,
+        g2p_factory: Callable[..., Any] = get_g2p,
+        g2p_options: Mapping[str, Any] | None = None,
     ) -> PiperVoice:
         config = VoiceConfig.from_json(resolved.config_path)
-        owns_frontend = frontend is None
-        if frontend is None:
-            frontend = PiperFrontend(config, **dict(frontend_options or {}))
-        try:
-            runtime = open_installed_voice(
-                resolved,
-                providers=providers,
-                provider_options=provider_options,
-                session_options=session_options,
-            )
-        except Exception:
-            if owns_frontend:
-                frontend.close()
-            raise
+        runtime = open_installed_voice(
+            resolved,
+            providers=providers,
+            provider_options=provider_options,
+            session_options=session_options,
+        )
         return cls(
             runtime,
             config,
-            frontend,
-            owns_frontend=owns_frontend,
+            g2p_factory=g2p_factory,
+            g2p_options=g2p_options,
             model_path=resolved.model_path,
             config_path=resolved.config_path,
             installation=resolved.installation,
@@ -138,7 +291,8 @@ class PiperVoice:
         providers: Sequence[ProviderSpec | ProviderConfig] | None = None,
         provider_options: Mapping[str, Any] | None = None,
         session_options: Any | None = None,
-        frontend_options: Mapping[str, Any] | None = None,
+        g2p_factory: Callable[..., Any] = get_g2p,
+        g2p_options: Mapping[str, Any] | None = None,
     ) -> PiperVoice:
         """Load a managed VoiceBundle without discarding its catalog identity."""
         if getattr(bundle, "installation", None) is None:
@@ -148,7 +302,8 @@ class PiperVoice:
                 providers=providers,
                 provider_options=provider_options,
                 session_options=session_options,
-                frontend_options=frontend_options,
+                g2p_factory=g2p_factory,
+                g2p_options=g2p_options,
             )
         from ._onnxvoice import installation_to_voice_info
 
@@ -157,7 +312,8 @@ class PiperVoice:
             providers=providers,
             provider_options=provider_options,
             session_options=session_options,
-            frontend_options=frontend_options,
+            g2p_factory=g2p_factory,
+            g2p_options=g2p_options,
         )
 
     @classmethod
@@ -169,8 +325,8 @@ class PiperVoice:
         providers: Sequence[ProviderSpec | ProviderConfig] | None = None,
         provider_options: Mapping[str, Any] | None = None,
         session_options: Any | None = None,
-        frontend: PiperFrontend | None = None,
-        frontend_options: Mapping[str, Any] | None = None,
+        g2p_factory: Callable[..., Any] = get_g2p,
+        g2p_options: Mapping[str, Any] | None = None,
     ) -> PiperVoice:
         """Load an explicit local Piper model through OnnxVoice."""
 
@@ -181,26 +337,18 @@ class PiperVoice:
         if not config_file.exists():
             raise ConfigFileNotFoundError(f"Voice config file does not exist: {config_file}")
         config = VoiceConfig.from_json(config_file)
-        owns_frontend = frontend is None
-        if frontend is None:
-            frontend = PiperFrontend(config, **dict(frontend_options or {}))
-        try:
-            runtime = open_local_voice(
-                model,
-                config_file,
-                providers=providers,
-                provider_options=provider_options,
-                session_options=session_options,
-            )
-        except Exception:
-            if owns_frontend:
-                frontend.close()
-            raise
+        runtime = open_local_voice(
+            model,
+            config_file,
+            providers=providers,
+            provider_options=provider_options,
+            session_options=session_options,
+        )
         return cls(
             runtime,
             config,
-            frontend,
-            owns_frontend=owns_frontend,
+            g2p_factory=g2p_factory,
+            g2p_options=g2p_options,
             model_path=model,
             config_path=config_file,
         )
@@ -217,7 +365,8 @@ class PiperVoice:
         providers: Sequence[ProviderSpec | ProviderConfig] | None = None,
         provider_options: Mapping[str, Any] | None = None,
         session_options: Any | None = None,
-        frontend_options: Mapping[str, Any] | None = None,
+        g2p_factory: Callable[..., Any] = get_g2p,
+        g2p_options: Mapping[str, Any] | None = None,
         progress: Callable[[AssetProgressEvent], None] | None = None,
     ) -> PiperVoice:
         resolved = install_pretrained_voice(
@@ -233,7 +382,8 @@ class PiperVoice:
             providers=providers,
             provider_options=provider_options,
             session_options=session_options,
-            frontend_options=frontend_options,
+            g2p_factory=g2p_factory,
+            g2p_options=g2p_options,
         )
 
     @property
@@ -244,8 +394,8 @@ class PiperVoice:
     def diagnostics(self) -> RuntimeDiagnostics:
         self._ensure_open()
         runtime_fields = runtime_diagnostics(self.runtime)
-        frontend_diagnostics = getattr(self.frontend, "diagnostics", None)
-        frontend_name = getattr(frontend_diagnostics, "backend", None)
+        g2p_diagnostics = self._last_g2p_diagnostics
+        frontend_name = getattr(g2p_diagnostics, "backend", None)
         speaker_names = tuple(getattr(self.config, "speaker_id_map", {}).keys())
         return RuntimeDiagnostics(
             model_path=runtime_fields.get("model_path")
@@ -418,7 +568,7 @@ class PiperVoice:
                     f"language {segment.language!r} is incompatible with active Piper model language "
                     f"{model_language!r}; use a source-aligned language override for supported spans"
                 )
-        g2p = get_g2p(segment.language, config=self.config)
+        g2p = self._g2p_factory(segment.language, config=self.config, **self._g2p_options)
         overrides = tuple(
             OverrideSpan(
                 override.start,
@@ -444,11 +594,13 @@ class PiperVoice:
             )
             for token in segment.annotations
         )
-        return g2p.phonemize_prepared(
+        result = g2p.phonemize_prepared(
             segment.text,
             overrides=overrides or None,
             annotations=annotations or None,
         )
+        self._last_g2p_diagnostics = result.diagnostics
+        return result
 
     def _iter_rendered_chunks(
         self,
@@ -456,9 +608,16 @@ class PiperVoice:
         phonemized: Any,
         synthesis_config: SynthesisConfig,
         speaker_id: int | None,
+        *,
+        chunk_index_start: int = 0,
+        request_warnings: Sequence[str] | None = None,
+        text_chunk_metadata: Mapping[str, Any] | None = None,
     ) -> Iterator[RenderedChunk]:
-        chunk_index = 0
-        request_warnings = tuple(phonemized.warnings)
+        chunk_index = chunk_index_start
+        warnings_for_request = (
+            tuple(phonemized.warnings) if request_warnings is None else tuple(request_warnings)
+        )
+        is_first_chunk = True
         for sentence in phonemized.sentences:
             if not sentence.ids:
                 continue
@@ -473,6 +632,8 @@ class PiperVoice:
                 metadata["inference_output"] = inference.output_summary
             if phonemized.diagnostics is not None:
                 metadata["frontend_diagnostics"] = phonemized.diagnostics
+            if text_chunk_metadata is not None:
+                metadata["text_chunk"] = dict(text_chunk_metadata)
             application = self.last_voice_level_application
             if application is not None:
                 metadata["voice_level"] = {
@@ -481,8 +642,10 @@ class PiperVoice:
                     "source": application.source,
                     "key": str(application.key) if application.key else None,
                 }
-            warnings = tuple(
-                dict.fromkeys((*sentence.warnings, *(request_warnings if chunk_index == 0 else ())))
+            chunk_warnings = tuple(
+                dict.fromkeys(
+                    (*sentence.warnings, *(warnings_for_request if is_first_chunk else ()))
+                )
             )
             yield RenderedChunk(
                 index=chunk_index,
@@ -491,31 +654,58 @@ class PiperVoice:
                 segment_id=segment.id,
                 phonemes=tuple(sentence.phonemes),
                 phoneme_ids=tuple(sentence.ids),
-                warnings=warnings,
+                warnings=chunk_warnings,
                 metadata=metadata,
             )
             chunk_index += 1
+            is_first_chunk = False
+
+    def _iter_phonemized_parts(
+        self, parts: Sequence[_TextPart]
+    ) -> Iterator[tuple[_TextPart, Any, tuple[str, ...]]]:
+        seen_warnings: set[str] = set()
+        for part in parts:
+            phonemized = self._phonemize_segment(part.segment)
+            new_warnings = tuple(
+                warning for warning in phonemized.warnings if warning not in seen_warnings
+            )
+            seen_warnings.update(phonemized.warnings)
+            yield part, phonemized, new_warnings
 
     def iter_chunks(
         self,
         segment: SynthesisSegment,
         *,
         config: SynthesisConfig | None = None,
+        chunking: TextChunkingConfig | None = None,
     ) -> Iterator[RenderedChunk]:
-        """Yield one inferred chunk per PiperG2P sentence group in a request."""
+        """Yield inferred Piper sentence groups in source order."""
         self._ensure_open()
         if not isinstance(segment, SynthesisSegment):
             raise TypeError("segment must be a SynthesisSegment")
         synthesis_config = config or SynthesisConfig()
         speaker_id = self.resolve_speaker_id(segment.speaker)
-        phonemized = self._phonemize_segment(segment)
-        yield from self._iter_rendered_chunks(segment, phonemized, synthesis_config, speaker_id)
+        parts = _request_text_parts(segment, chunking)
+        chunk_index = 0
+        for part, phonemized, request_warnings in self._iter_phonemized_parts(parts):
+            for chunk in self._iter_rendered_chunks(
+                part.segment,
+                phonemized,
+                synthesis_config,
+                speaker_id,
+                chunk_index_start=chunk_index,
+                request_warnings=request_warnings,
+                text_chunk_metadata=part.metadata,
+            ):
+                yield chunk
+                chunk_index = chunk.index + 1
 
     def synthesize(
         self,
         segment: SynthesisSegment,
         *,
         config: SynthesisConfig | None = None,
+        chunking: TextChunkingConfig | None = None,
     ) -> RenderedSegment:
         """Render one independent prepared-text speech request."""
         self._ensure_open()
@@ -523,10 +713,25 @@ class PiperVoice:
             raise TypeError("segment must be a SynthesisSegment")
         synthesis_config = config or SynthesisConfig()
         speaker_id = self.resolve_speaker_id(segment.speaker)
-        phonemized = self._phonemize_segment(segment)
-        chunks = tuple(
-            self._iter_rendered_chunks(segment, phonemized, synthesis_config, speaker_id)
-        )
+        text_parts = _request_text_parts(segment, chunking)
+        rendered_chunks: list[RenderedChunk] = []
+        all_warnings: list[str] = []
+        chunk_index = 0
+        for part, phonemized, new_warnings in self._iter_phonemized_parts(text_parts):
+            all_warnings.extend(new_warnings)
+            for chunk in self._iter_rendered_chunks(
+                part.segment,
+                phonemized,
+                synthesis_config,
+                speaker_id,
+                chunk_index_start=chunk_index,
+                request_warnings=new_warnings,
+                text_chunk_metadata=part.metadata,
+            ):
+                rendered_chunks.append(chunk)
+                all_warnings.extend(chunk.warnings)
+                chunk_index = chunk.index + 1
+        chunks = tuple(rendered_chunks)
         audio = (
             np.concatenate([chunk.audio for chunk in chunks]).astype(np.float32, copy=False)
             if chunks
@@ -534,14 +739,20 @@ class PiperVoice:
         )
         phonemes = tuple(symbol for chunk in chunks for symbol in chunk.phonemes)
         phoneme_ids = tuple(identifier for chunk in chunks for identifier in chunk.phoneme_ids)
-        warnings = tuple(
-            dict.fromkeys(
-                (*phonemized.warnings, *(warning for chunk in chunks for warning in chunk.warnings))
-            )
-        )
-        metadata: dict[str, Any] = {}
-        if phonemized.diagnostics is not None:
-            metadata["frontend_diagnostics"] = phonemized.diagnostics
+        warnings = tuple(dict.fromkeys(all_warnings))
+        metadata: dict[str, Any] = {
+            "text_chunking": {
+                "mode": (chunking or TextChunkingConfig()).mode,
+                "backend": text_parts[0].metadata.get("split_backend"),
+                "diagnostics": text_parts[0].metadata.get("split_diagnostics"),
+                "input_chars": len(segment.text),
+                "text_parts": len(text_parts),
+                "rendered_chunks": len(chunks),
+                "max_chars": (chunking or TextChunkingConfig()).max_chars,
+            }
+        }
+        if self._last_g2p_diagnostics is not None:
+            metadata["frontend_diagnostics"] = self._last_g2p_diagnostics
         if chunks and "voice_level" in chunks[-1].metadata:
             metadata["voice_level"] = chunks[-1].metadata["voice_level"]
         return RenderedSegment(
@@ -567,6 +778,7 @@ class PiperVoice:
         id: str | None = None,
         speaker: int | str | None = None,
         config: SynthesisConfig | None = None,
+        chunking: TextChunkingConfig | None = None,
     ) -> RenderedSegment:
         """Synthesize already-prepared speakable text."""
         segment = SynthesisSegment(
@@ -575,7 +787,7 @@ class PiperVoice:
             language=language,
             speaker=speaker,
         )
-        return self.synthesize(segment, config=config)
+        return self.synthesize(segment, config=config, chunking=chunking)
 
     def warmup(self) -> None:
         self._ensure_open()
@@ -584,8 +796,6 @@ class PiperVoice:
     def close(self) -> None:
         if self._closed:
             return
-        if self._owns_frontend:
-            self.frontend.close()
         close = getattr(self.runtime, "close", None)
         if close is not None:
             close()

@@ -11,7 +11,11 @@ with PiperVoice.from_pretrained("en_US-lessac-medium") as voice:
     second = voice.synthesize_text("Second prepared request.", language="en-us")
 ```
 
-`iter_chunks()` yields request-local PiperG2P sentence groups as soon as each group is inferred. `synthesize()` collects and joins those chunks without adding silence. Use caller-side streaming or AudioCompose for document-level timelines.
+`iter_chunks()` first derives prepared-text parts with Phrasplit's exact offsets in regex mode, then phonemizes and infers each part incrementally. PiperG2P still owns its sentence groups, so one text part can yield multiple rendered chunks. `synthesize()` joins them in source order without adding silence.
+
+`TextChunkingConfig` defaults to sentence splitting and accepts `max_chars` for long or run-on text. Chunk metadata identifies the exact `[char_start, char_end)` slice of the original prepared request, and the result summary reports the splitter diagnostics and number of text parts. Overrides, annotations, and raw phoneme blocks protect their complete spans; merging can make a part longer than the requested character limit. Use `mode="none"` to skip PiperSynth splitting while retaining PiperG2P sentence groups.
+
+These are synthesis-engine chunks, not semantic pauses or document timeline segments. Use caller-side streaming or AudioCompose when a larger application needs document-level composition.
 
 ## Static voice-level calibration
 
@@ -23,6 +27,6 @@ The packaged calibration catalog is `pipersynth/data/voice_level_calibration.jso
 
 ## Re-measuring calibration
 
-The calibration benchmark accepts explicit prepared text and a matching Piper language. It does not invoke Spokenform or expand numbers. Review its measurement report before promoting data. Promotion writes a separate catalog and refuses to overwrite the packaged production catalog.
+The calibration benchmark accepts explicit prepared text and a matching Piper language. It measures the supplied text as-is and does not expand numbers. Review its measurement report before promoting data. Promotion writes a separate catalog and refuses to overwrite the packaged production catalog.
 
 See `benchmarks/README.md` for the measurement and promotion workflow.

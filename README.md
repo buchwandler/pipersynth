@@ -1,6 +1,6 @@
 # PiperSynth
 
-PiperSynth is a standalone synthesis engine for Piper-compatible ONNX voices. It accepts prepared, speakable text, applies Piper-specific frontend and acoustic policy, calls OnnxVoice for inference, and returns independent rendered speech. PiperG2P owns text phonemization and Piper ID generation. Document parsing, SSMD, written-to-spoken preparation, semantic pauses, markers, timeline composition, and final mastering belong to other layers.
+PiperSynth is a standalone synthesis engine for Piper-compatible ONNX voices. Callers provide prepared, speakable text; PiperG2P owns phonemization and Piper ID generation, OnnxVoice handles model inference, and PiperSynth applies engine-local acoustic and audio policy. Document parsing, SSMD, written-to-spoken preparation, semantic pauses, markers, timeline composition, and final mastering belong to other layers.
 
 ## Install
 
@@ -27,6 +27,33 @@ with PiperVoice.from_pretrained("en_US-lessac-medium") as voice:
 
 `prepared_text` is ordinary speakable text, not phoneme IDs. PiperSynth does not expand numbers, dates, abbreviations, or other written forms. Perform that semantic preparation before calling the engine.
 
+## Long prepared text
+
+Sentence chunking is the default. `max_chars` can add request-local splits for long or run-on text. PiperSynth uses Phrasplit in regex mode and preserves exact ranges into the prepared string. Boundaries that cross a pronunciation override, token annotation, or raw `[[...]]` phoneme block are merged, so a protected span is never clipped. A merged part can therefore exceed `max_chars`.
+
+```python
+from pipersynth import PiperVoice, TextChunkingConfig
+
+prepared_text = (
+    "The first prepared paragraph describes the field observations and the "
+    "conditions recorded during the morning survey.\n\n"
+    "A second paragraph continues the account without asking PiperSynth to "
+    "interpret or prepare a source document."
+)
+
+with PiperVoice.from_pretrained("en_US-lessac-medium") as voice:
+    result = voice.synthesize_text(
+        prepared_text,
+        language="en-us",
+        chunking=TextChunkingConfig(max_chars=100),
+    )
+
+for chunk in result.chunks:
+    source = chunk.metadata["text_chunk"]
+    print(source["char_start"], source["char_end"])
+```
+
+Every chunk's `text_chunk` metadata contains `char_start`, `char_end`, and the split mode. Sentence-mode chunks also include the regex backend and Phrasplit split ID. The request summary is available in `result.metadata["text_chunking"]`. `TextChunkingConfig(mode="none")` disables only PiperSynth's pre-segmentation; PiperG2P may still return its normal sentence groups.
 For repeated requests, reuse one voice:
 
 ```python
@@ -79,7 +106,7 @@ Offsets use Python half-open ranges into the exact prepared string. PiperSynth f
 
 ## Streaming and low-level IDs
 
-`PiperVoice.iter_chunks()` yields request-local chunks for nonempty PiperG2P sentence groups. It inserts no semantic silence. `PiperVoice.synthesize()` joins those chunks into one `RenderedSegment`.
+`PiperVoice.iter_chunks()` applies the configured text pre-segmentation, then yields each nonempty PiperG2P sentence group as soon as it is inferred. `PiperVoice.synthesize()` joins those chunks in source order without adding silence. Each chunk exposes its source range in `chunk.metadata["text_chunk"]`; use `TextChunkingConfig(mode="none")` to bypass only PiperSynth's text pre-segmentation.
 
 `PiperVoice.synthesize_ids()` remains available for callers that already have Piper phoneme IDs. ID validation, speaker selection, acoustic controls, voice calibration, and waveform postprocessing still apply.
 

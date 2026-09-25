@@ -3,13 +3,13 @@ schema_version: 2
 object_type: release_entry
 versioning:
   schema_version: 1
-  revision: 1
+  revision: 2
 entry_id: entry-0006
 release_version: v0.1.3
 kind: docs
 summary:
-  Documented catalog voices, per-speaker calibration identities, and Spokenform
-  language gaps in an all-voices example
+  Documented Piper catalog voice discovery and model-speaker identities in
+  an all-voices example
 status: accepted
 audience: null
 scopes: []
@@ -30,4 +30,4 @@ internal: false
 order: 6
 ---
 
-examples/all_voices.py prints the catalog without downloading voice models and writes inventory, language, and missing-language reports below example-artefacts. The full showcase is resource-heavy and runs only with an explicit runner flag.
+The all-voices example lists catalog metadata without downloading models, writes a local inventory, and optionally synthesizes one prepared sample for a selected voice and model speaker.

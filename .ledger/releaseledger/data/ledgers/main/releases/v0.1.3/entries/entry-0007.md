@@ -3,14 +3,14 @@ schema_version: 2
 object_type: release_entry
 versioning:
   schema_version: 1
-  revision: 1
+  revision: 2
 entry_id: entry-0007
 release_version: v0.1.3
 kind: changed
 summary:
   Changed plan rendering to add prepare_plan_segments for canonical speech-only
   segments on the utterplan 0.2 line
-status: accepted
+status: rejected
 audience: null
 scopes: []
 source_refs:

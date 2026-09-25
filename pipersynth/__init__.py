@@ -41,6 +41,8 @@ from .types import (
     RenderedSegment,
     SynthesisConfig,
     SynthesisSegment,
+    TextChunkingConfig,
+    TextSplitMode,
 )
 from .voice import PiperVoice
 from .voice_level import (
@@ -87,6 +89,8 @@ __all__ = [
     "SynthesisConfig",
     "SynthesisError",
     "SynthesisSegment",
+    "TextChunkingConfig",
+    "TextSplitMode",
     "UnsupportedModelError",
     "VoiceAssetManager",
     "VoiceBundle",
