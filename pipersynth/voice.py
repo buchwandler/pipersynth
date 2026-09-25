@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import wave
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any
+from uuid import uuid4
 
 import numpy as np
-from piperg2p import PiperFrontend, VoiceConfig
+from piperg2p import OverrideSpan, PiperFrontend, TokenAnnotation, VoiceConfig, get_g2p
 
 from ._onnxvoice import (
     ResolvedPiperVoice,
@@ -18,20 +18,28 @@ from ._onnxvoice import (
     summarize_inference,
 )
 from .asset_progress import AssetProgressEvent
-from .audio import finish_audio, prepare_audio, silence_samples
+from .audio import finish_audio, prepare_audio
 from .diagnostics import RuntimeDiagnostics
 from .errors import (
     ConfigFileNotFoundError,
     InvalidSpeakerError,
+    InvalidSynthesisConfigError,
     ModelFileNotFoundError,
     ModelInferenceError,
     VoiceClosedError,
 )
 from .session import ProviderConfig, ProviderSpec
-from .types import AudioChunk, SynthesisConfig
-from .voice_level import VoiceCalibrationKey, VoiceLevelApplication, apply_voice_level_calibration
-
-SessionFactory = Callable[..., Any]
+from .types import (
+    RenderedChunk,
+    RenderedSegment,
+    SynthesisConfig,
+    SynthesisSegment,
+)
+from .voice_level import (
+    VoiceCalibrationKey,
+    VoiceLevelApplication,
+    apply_voice_level_calibration,
+)
 
 
 def _reduce_waveform(value: Any) -> np.ndarray:
@@ -75,15 +83,6 @@ class PiperVoice:
         config_path: str | Path | None = None,
         installation: Any | None = None,
     ) -> None:
-        if not hasattr(runtime, "infer") and hasattr(runtime, "run"):
-            from .session import compatibility_runtime
-
-            runtime = compatibility_runtime(
-                runtime,
-                model_path=model_path or "<injected>",
-                config_path=config_path or "<injected>",
-                sample_rate=config.sample_rate,
-            )
         self.runtime = runtime
         self.config = config
         self.frontend = frontend
@@ -143,7 +142,7 @@ class PiperVoice:
     ) -> PiperVoice:
         """Load a managed VoiceBundle without discarding its catalog identity."""
         if getattr(bundle, "installation", None) is None:
-            return cls.load(
+            return cls.from_local(
                 bundle.model_path,
                 bundle.config_path,
                 providers=providers,
@@ -162,7 +161,7 @@ class PiperVoice:
         )
 
     @classmethod
-    def load(
+    def from_local(
         cls,
         model_path: str | Path,
         config_path: str | Path | None = None,
@@ -170,7 +169,6 @@ class PiperVoice:
         providers: Sequence[ProviderSpec | ProviderConfig] | None = None,
         provider_options: Mapping[str, Any] | None = None,
         session_options: Any | None = None,
-        session_factory: SessionFactory | None = None,
         frontend: PiperFrontend | None = None,
         frontend_options: Mapping[str, Any] | None = None,
     ) -> PiperVoice:
@@ -187,28 +185,13 @@ class PiperVoice:
         if frontend is None:
             frontend = PiperFrontend(config, **dict(frontend_options or {}))
         try:
-            if session_factory is not None:
-                from .session import compatibility_runtime
-
-                runtime = compatibility_runtime(
-                    session_factory(
-                        str(model),
-                        providers=providers,
-                        provider_options=provider_options,
-                        sess_options=session_options,
-                    ),
-                    model_path=model,
-                    config_path=config_file,
-                    sample_rate=config.sample_rate,
-                )
-            else:
-                runtime = open_local_voice(
-                    model,
-                    config_file,
-                    providers=providers,
-                    provider_options=provider_options,
-                    session_options=session_options,
-                )
+            runtime = open_local_voice(
+                model,
+                config_file,
+                providers=providers,
+                provider_options=provider_options,
+                session_options=session_options,
+            )
         except Exception:
             if owns_frontend:
                 frontend.close()
@@ -252,12 +235,6 @@ class PiperVoice:
             session_options=session_options,
             frontend_options=frontend_options,
         )
-
-    @property
-    def session(self) -> Any:
-        """Return the runtime session for diagnostics compatibility."""
-
-        return getattr(self.runtime, "session", None)
 
     @property
     def closed(self) -> bool:
@@ -320,8 +297,8 @@ class PiperVoice:
             )
         return value
 
-    def calibration_key(self, syn_config: SynthesisConfig) -> VoiceCalibrationKey | None:
-        """Return the exact managed Piper identity used by calibration lookup."""
+    def calibration_key(self, speaker: int | str | None = None) -> VoiceCalibrationKey | None:
+        """Return the exact managed Piper identity used for calibration lookup."""
         self._ensure_open()
         if self.installation is None:
             return None
@@ -332,7 +309,7 @@ class PiperVoice:
             return None
         if not isinstance(quality, str) or not quality:
             return None
-        speaker_id = self.resolve_speaker_id(syn_config.speaker_id)
+        speaker_id = self.resolve_speaker_id(speaker)
         return VoiceCalibrationKey("piper", model_id, quality, f"speaker-{speaker_id or 0}")
 
     @property
@@ -343,11 +320,7 @@ class PiperVoice:
         return (
             float(self.config.noise_scale if syn.noise_scale is None else syn.noise_scale),
             float(self.config.length_scale if syn.length_scale is None else syn.length_scale),
-            float(
-                self.config.noise_w_scale
-                if syn.resolved_noise_w_scale is None
-                else syn.resolved_noise_w_scale
-            ),
+            float(self.config.noise_w_scale if syn.noise_w_scale is None else syn.noise_w_scale),
         )
 
     def _validated_ids(self, phoneme_ids: Sequence[int]) -> list[int]:
@@ -370,13 +343,15 @@ class PiperVoice:
         self,
         phoneme_ids: Sequence[int],
         syn_config: SynthesisConfig | None = None,
+        *,
+        speaker: int | str | None = None,
     ) -> PiperInference:
         self._ensure_open()
         ids_values = self._validated_ids(phoneme_ids)
         if not ids_values:
             return PiperInference(np.zeros(0, dtype=np.float32), self.config.sample_rate)
         syn = syn_config or SynthesisConfig()
-        speaker_id = self.resolve_speaker_id(syn.speaker_id)
+        speaker_id = self.resolve_speaker_id(speaker)
         noise_scale, length_scale, noise_w = self._resolved_scales(syn)
         try:
             result = self.runtime.infer(
@@ -405,133 +380,206 @@ class PiperVoice:
         self,
         audio: np.ndarray,
         syn_config: SynthesisConfig,
+        *,
+        speaker: int | str | None = None,
     ) -> np.ndarray:
-        """Apply shared runtime audio processing and static voice leveling."""
+        """Apply engine-local normalization, voice leveling, and output gain."""
         prepared = prepare_audio(audio, normalize=syn_config.normalize_audio)
-        key = self.calibration_key(syn_config)
-        calibrated, application = apply_voice_level_calibration(prepared, syn_config.loudness, key)
+        key = self.calibration_key(speaker)
+        calibrated, application = apply_voice_level_calibration(
+            prepared, syn_config.voice_level, key
+        )
         self._last_voice_level_application = application
-        return finish_audio(calibrated, volume=syn_config.volume)
+        return finish_audio(calibrated, output_gain=syn_config.output_gain)
 
     def synthesize_ids(
         self,
         phoneme_ids: Sequence[int],
-        syn_config: SynthesisConfig | None = None,
+        config: SynthesisConfig | None = None,
+        *,
+        speaker: int | str | None = None,
     ) -> np.ndarray:
         """Run acoustic inference from already encoded phoneme IDs."""
+        synthesis_config = config or SynthesisConfig()
+        inference = self._infer_ids(phoneme_ids, synthesis_config, speaker=speaker)
+        return self.postprocess_inference(inference.audio, synthesis_config, speaker=speaker)
 
-        syn = syn_config or SynthesisConfig()
-        inference = self._infer_ids(phoneme_ids, syn)
-        return self.postprocess_inference(inference.audio, syn)
+    def _phonemize_segment(self, segment: SynthesisSegment) -> Any:
+        self._ensure_open()
+        if not isinstance(segment, SynthesisSegment):
+            raise TypeError("segment must be a SynthesisSegment")
+        model_language = self.config.espeak_voice
+        phoneme_type = getattr(self.config.phoneme_type, "value", self.config.phoneme_type)
+        if phoneme_type == "espeak" and model_language:
+            requested = segment.language.casefold().replace("_", "-")
+            active = model_language.casefold().replace("_", "-")
+            if requested != active:
+                raise InvalidSynthesisConfigError(
+                    f"language {segment.language!r} is incompatible with active Piper model language "
+                    f"{model_language!r}; use a source-aligned language override for supported spans"
+                )
+        g2p = get_g2p(segment.language, config=self.config)
+        overrides = tuple(
+            OverrideSpan(
+                override.start,
+                override.end,
+                {
+                    **({"ph": override.phonemes} if override.phonemes is not None else {}),
+                    **({"lang": override.language} if override.language is not None else {}),
+                    **({"stress": int(override.stress)} if override.stress is not None else {}),
+                },
+            )
+            for override in segment.pronunciation_overrides
+        )
+        annotations = tuple(
+            TokenAnnotation(
+                start=token.start,
+                end=token.end,
+                text=token.text,
+                pos=token.pos,
+                tag=token.tag,
+                lemma=token.lemma,
+                language=token.language,
+                morph=token.morph,
+            )
+            for token in segment.annotations
+        )
+        return g2p.phonemize_prepared(
+            segment.text,
+            overrides=overrides or None,
+            annotations=annotations or None,
+        )
+
+    def _iter_rendered_chunks(
+        self,
+        segment: SynthesisSegment,
+        phonemized: Any,
+        synthesis_config: SynthesisConfig,
+        speaker_id: int | None,
+    ) -> Iterator[RenderedChunk]:
+        chunk_index = 0
+        request_warnings = tuple(phonemized.warnings)
+        for sentence in phonemized.sentences:
+            if not sentence.ids:
+                continue
+            inference = self._infer_ids(sentence.ids, synthesis_config, speaker=speaker_id)
+            audio = self.postprocess_inference(
+                inference.audio, synthesis_config, speaker=speaker_id
+            )
+            metadata: dict[str, Any] = {}
+            if inference.timing_summary is not None:
+                metadata["inference_timing"] = inference.timing_summary
+            if inference.output_summary:
+                metadata["inference_output"] = inference.output_summary
+            if phonemized.diagnostics is not None:
+                metadata["frontend_diagnostics"] = phonemized.diagnostics
+            application = self.last_voice_level_application
+            if application is not None:
+                metadata["voice_level"] = {
+                    "applied": application.applied,
+                    "gain_db": application.gain_db,
+                    "source": application.source,
+                    "key": str(application.key) if application.key else None,
+                }
+            warnings = tuple(
+                dict.fromkeys((*sentence.warnings, *(request_warnings if chunk_index == 0 else ())))
+            )
+            yield RenderedChunk(
+                index=chunk_index,
+                audio=audio,
+                sample_rate=inference.sample_rate,
+                segment_id=segment.id,
+                phonemes=tuple(sentence.phonemes),
+                phoneme_ids=tuple(sentence.ids),
+                warnings=warnings,
+                metadata=metadata,
+            )
+            chunk_index += 1
+
+    def iter_chunks(
+        self,
+        segment: SynthesisSegment,
+        *,
+        config: SynthesisConfig | None = None,
+    ) -> Iterator[RenderedChunk]:
+        """Yield one inferred chunk per PiperG2P sentence group in a request."""
+        self._ensure_open()
+        if not isinstance(segment, SynthesisSegment):
+            raise TypeError("segment must be a SynthesisSegment")
+        synthesis_config = config or SynthesisConfig()
+        speaker_id = self.resolve_speaker_id(segment.speaker)
+        phonemized = self._phonemize_segment(segment)
+        yield from self._iter_rendered_chunks(segment, phonemized, synthesis_config, speaker_id)
 
     def synthesize(
         self,
-        text: str,
-        syn_config: SynthesisConfig | None = None,
-    ) -> Iterator[AudioChunk]:
-        """Yield one audio chunk per sentence returned by ``piperg2p``."""
-
+        segment: SynthesisSegment,
+        *,
+        config: SynthesisConfig | None = None,
+    ) -> RenderedSegment:
+        """Render one independent prepared-text speech request."""
         self._ensure_open()
-        result = self.frontend.phonemize_prepared(text)
-        for sentence in result.sentences:
-            if not sentence.ids:
-                continue
-            audio = self.synthesize_ids(sentence.ids, syn_config)
-            metadata: dict[str, Any] = {}
-            application = self.last_voice_level_application
-            if application is not None:
-                metadata.update(
-                    {
-                        "voice_leveling_mode": syn_config.loudness.voice_leveling
-                        if syn_config
-                        else "off",
-                        "voice_calibration_key": str(application.key) if application.key else None,
-                        "voice_calibration_gain_db": application.gain_db,
-                        "voice_calibration_source": application.source,
-                    }
-                )
-            if result.diagnostics is not None:
-                metadata["frontend_diagnostics"] = result.diagnostics
-            yield AudioChunk(
-                sample_rate=self.config.sample_rate,
-                audio_float_array=audio,
-                phonemes=tuple(sentence.phonemes),
-                phoneme_ids=tuple(sentence.ids),
-                warnings=tuple(sentence.warnings),
-                metadata=metadata,
+        if not isinstance(segment, SynthesisSegment):
+            raise TypeError("segment must be a SynthesisSegment")
+        synthesis_config = config or SynthesisConfig()
+        speaker_id = self.resolve_speaker_id(segment.speaker)
+        phonemized = self._phonemize_segment(segment)
+        chunks = tuple(
+            self._iter_rendered_chunks(segment, phonemized, synthesis_config, speaker_id)
+        )
+        audio = (
+            np.concatenate([chunk.audio for chunk in chunks]).astype(np.float32, copy=False)
+            if chunks
+            else np.zeros(0, dtype=np.float32)
+        )
+        phonemes = tuple(symbol for chunk in chunks for symbol in chunk.phonemes)
+        phoneme_ids = tuple(identifier for chunk in chunks for identifier in chunk.phoneme_ids)
+        warnings = tuple(
+            dict.fromkeys(
+                (*phonemized.warnings, *(warning for chunk in chunks for warning in chunk.warnings))
             )
+        )
+        metadata: dict[str, Any] = {}
+        if phonemized.diagnostics is not None:
+            metadata["frontend_diagnostics"] = phonemized.diagnostics
+        if chunks and "voice_level" in chunks[-1].metadata:
+            metadata["voice_level"] = chunks[-1].metadata["voice_level"]
+        return RenderedSegment(
+            id=segment.id,
+            audio=audio,
+            sample_rate=self.config.sample_rate,
+            text=segment.text,
+            language=segment.language,
+            speaker_id=speaker_id,
+            phonemes=phonemes,
+            phoneme_ids=phoneme_ids,
+            warnings=warnings,
+            chunks=chunks,
+            diagnostics=self.diagnostics,
+            metadata=metadata,
+        )
 
-    def synthesize_array(
+    def synthesize_text(
         self,
-        text: str,
-        syn_config: SynthesisConfig | None = None,
+        prepared_text: str,
         *,
-        sentence_silence: float = 0.0,
-    ) -> np.ndarray:
-        """Synthesize text and concatenate all sentence chunks."""
-
-        self._ensure_open()
-        silence_count = silence_samples(self.config.sample_rate, sentence_silence)
-        chunks = list(self.synthesize(text, syn_config))
-        if not chunks:
-            return np.zeros(0, dtype=np.float32)
-        if silence_count == 0 or len(chunks) == 1:
-            return np.concatenate([chunk.audio_float_array for chunk in chunks]).astype(
-                np.float32, copy=False
-            )
-        silence = np.zeros(silence_count, dtype=np.float32)
-        parts: list[np.ndarray] = []
-        for index, chunk in enumerate(chunks):
-            if index:
-                parts.append(silence)
-            parts.append(chunk.audio_float_array)
-        return np.concatenate(parts).astype(np.float32, copy=False)
-
-    def synthesize_wav(
-        self,
-        text: str,
-        wav_file: str | Path | BinaryIO,
-        syn_config: SynthesisConfig | None = None,
-        *,
-        sentence_silence: float = 0.0,
-        set_wav_format: bool = True,
-    ) -> str | Path | BinaryIO:
-        """Stream synthesized chunks to a mono 16-bit PCM WAV target."""
-
-        self._ensure_open()
-        silence_count = silence_samples(self.config.sample_rate, sentence_silence)
-        wav_target = str(wav_file) if isinstance(wav_file, Path) else wav_file
-        with wave.open(wav_target, "wb") as handle:
-            if set_wav_format:
-                handle.setnchannels(1)
-                handle.setsampwidth(2)
-                handle.setframerate(self.config.sample_rate)
-            silence = np.zeros(silence_count, dtype=np.float32)
-            wrote_chunk = False
-            for chunk in self.synthesize(text, syn_config):
-                if wrote_chunk and silence_count:
-                    handle.writeframes(silence.astype(np.int16).tobytes())
-                handle.writeframes(chunk.audio_int16_bytes)
-                wrote_chunk = True
-        return wav_file
-
-    def save_wav(
-        self,
-        path: str | Path,
-        text: str,
-        syn_config: SynthesisConfig | None = None,
-        *,
-        sentence_silence: float = 0.0,
-    ) -> Path:
-        """Synthesize text and save mono 16-bit PCM WAV."""
-
-        target = Path(path)
-        self.synthesize_wav(text, target, syn_config, sentence_silence=sentence_silence)
-        return target
+        language: str,
+        id: str | None = None,
+        speaker: int | str | None = None,
+        config: SynthesisConfig | None = None,
+    ) -> RenderedSegment:
+        """Synthesize already-prepared speakable text."""
+        segment = SynthesisSegment(
+            id=id if id is not None else uuid4().hex,
+            text=prepared_text,
+            language=language,
+            speaker=speaker,
+        )
+        return self.synthesize(segment, config=config)
 
     def warmup(self) -> None:
         self._ensure_open()
-        _ = self.session
+        _ = getattr(self.runtime, "session", None)
 
     def close(self) -> None:
         if self._closed:

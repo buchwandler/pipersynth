@@ -1,11 +1,28 @@
-# Performance guidance
+# Performance and voice calibration
 
-Measure these phases separately: cold import, voice configuration, OnnxVoice installation, runtime opening, frontend initialization, phonemization, inference, composition, and total real-time factor.
+## Reuse a voice
 
-Reuse one `PiperVoice` or `PiperPipeline` for repeated requests. OnnxVoice runtime opening is substantially more expensive than a synthesis call. `render_plan()` is batch-oriented: it renders the plan once, builds one AudioJob, and composes it once. `to_audio_job()` is useful when persistence or generic replay is needed, but it does not avoid inference.
+Opening a Piper runtime is more expensive than an individual inference call. Reuse one `PiperVoice` for repeated requests:
 
-Use `iter_units()` or `prepare_units(...).render()` for streaming-style long documents to keep rendered unit audio bounded. Streaming remains separate from complete-output composition and whole-document loudness policy. PiperSynth does not cache waveforms by default because synthesis settings and model noise can change output.
+```python
+from pipersynth import PiperVoice
+with PiperVoice.from_pretrained("en_US-lessac-medium") as voice:
+    first = voice.synthesize_text("First prepared request.", language="en-us")
+    second = voice.synthesize_text("Second prepared request.", language="en-us")
+```
 
-## Voice loudness calibration maintenance
+`iter_chunks()` yields request-local PiperG2P sentence groups as soon as each group is inferred. `synthesize()` collects and joins those chunks without adding silence. Use caller-side streaming or AudioCompose for document-level timelines.
 
-The current loudness calibration promotes measured Vietnamese and Chinese identities even when the benchmark reports non-fatal `MissingPhonemeWarning` messages. After PiperG2P phoneme coverage changes for Vietnamese or Chinese text voices, rerun the affected loudness identities because corrected phonemization may alter the synthesized signal and its measured loudness.
+## Static voice-level calibration
+
+PiperSynth may apply one deterministic calibration gain for an exact model, quality, and numeric speaker identity. The calibration lookup key is `piper:model-id:quality:speaker-N`. Single-speaker voices use speaker 0. Anonymous local voices have no inferred catalog identity; an explicit `VoiceLevelConfig.gain_db` remains available when a caller supplies a reviewed gain.
+
+Calibration is applied after optional request peak normalization and before explicit `output_gain` and the final safety clamp. It is a fixed model/speaker correction. It does not measure each request at runtime and does not guarantee a target loudness for arbitrary text.
+
+The packaged calibration catalog is `pipersynth/data/voice_level_calibration.json`. It records measurements and static gains. Final LUFS and true-peak mastering belong to the caller's final-output layer.
+
+## Re-measuring calibration
+
+The calibration benchmark accepts explicit prepared text and a matching Piper language. It does not invoke Spokenform or expand numbers. Review its measurement report before promoting data. Promotion writes a separate catalog and refuses to overwrite the packaged production catalog.
+
+See `benchmarks/README.md` for the measurement and promotion workflow.

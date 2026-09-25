@@ -1,32 +1,24 @@
-"""Resolve a catalog voice automatically and render a persisted UtterPlan."""
+#!/usr/bin/env python3
+"""Install a catalog voice with progress and render a prepared sample."""
 
 from __future__ import annotations
 
 import os
 
-from _output import artefact_path
+from pipersynth import ConsoleAssetProgress, PiperVoice
 
-from pipersynth import ConsoleAssetProgress, PiperPipeline
+try:
+    from examples._output import artefact_path
+except ModuleNotFoundError:
+    from _output import artefact_path
 
 VOICE = os.environ.get("PIPERSYNTH_EXAMPLE_VOICE", "en_US-lessac-medium")
-TEXT = "This example resolves a Piper voice automatically before rendering its plan."
+TEXT = "PiperSynth uses OnnxVoice to install and run this Piper voice."
 
 
-with PiperPipeline.from_pretrained(
-    VOICE,
-    document_format="plain",
-    text_preparation="spokenform",
-    progress=ConsoleAssetProgress(),
-) as pipeline:
-    plan = pipeline.plan(TEXT, unit="sentence")
-    plan_path = artefact_path("download_and_synthesize.utterplan.json")
-    plan.save(plan_path)
+with PiperVoice.from_pretrained(VOICE, progress=ConsoleAssetProgress()) as voice:
+    result = voice.synthesize_text(TEXT, language="en-us")
 
-    result = pipeline.render_plan(plan)
-    wav_path = artefact_path("download_and_synthesize.wav")
-    result.save_wav(wav_path)
-
-    print(f"Resolved voice: {VOICE}")
-    print(f"Plan: {plan.plan_id}")
-    print(f"Plan path: {plan_path}")
-    print(f"WAV path: {wav_path}")
+wav_path = artefact_path("download_and_synthesize.wav")
+result.save_wav(wav_path)
+print(f"WAV path: {wav_path}")

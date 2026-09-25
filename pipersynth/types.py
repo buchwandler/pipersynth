@@ -2,17 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, Literal
+from typing import Any, BinaryIO
 
 import numpy as np
-from audiocompose import write_wav as compose_write_wav
-from utterplan import UtterancePlan
 
-from ._warnings import warn_external
 from .audio import audio_to_int16_bytes, float_to_int16, write_wav
-from .diagnostics import RuntimeDiagnostics, TimingDiagnostics
-from .errors import InvalidSynthesisConfigError, ModelInferenceError, OptionalDependencyError
-from .loudness_config import LoudnessConfig
+from .diagnostics import RuntimeDiagnostics
+from .errors import InvalidSynthesisConfigError, ModelInferenceError
+from .voice_level import VoiceLevelConfig
 
 
 def _finite(value: float, name: str, *, minimum: float) -> None:
@@ -22,153 +19,203 @@ def _finite(value: float, name: str, *, minimum: float) -> None:
         raise InvalidSynthesisConfigError(f"{name} must be finite and >= {minimum}")
 
 
+def _valid_span(start: int, end: int) -> None:
+    if (
+        isinstance(start, bool)
+        or not isinstance(start, int)
+        or isinstance(end, bool)
+        or not isinstance(end, int)
+        or start < 0
+        or start >= end
+    ):
+        raise ValueError("span must satisfy 0 <= start < end")
+
+
+def _validated_audio(audio: np.ndarray, *, name: str) -> np.ndarray:
+    result = np.array(audio, dtype=np.float32, copy=True)
+    if result.ndim != 1:
+        raise ModelInferenceError(f"{name} must be mono, got shape {result.shape}")
+    if not np.all(np.isfinite(result)):
+        raise ModelInferenceError(f"{name} contains non-finite samples")
+    return result
+
+
+def _validate_rate(sample_rate: int) -> None:
+    if isinstance(sample_rate, bool) or not isinstance(sample_rate, int) or sample_rate <= 0:
+        raise ValueError("sample_rate must be a positive integer")
+
+
+@dataclass(frozen=True, slots=True)
+class PronunciationOverride:
+    start: int
+    end: int
+    phonemes: str | None = None
+    language: str | None = None
+    stress: str | None = None
+
+    def __post_init__(self) -> None:
+        _valid_span(self.start, self.end)
+        if all(value is None for value in (self.phonemes, self.language, self.stress)):
+            raise ValueError("pronunciation override must specify at least one effect")
+        for name, value in (
+            ("phonemes", self.phonemes),
+            ("language", self.language),
+            ("stress", self.stress),
+        ):
+            if value is not None and (not isinstance(value, str) or not value):
+                raise ValueError(f"{name} must be a non-empty string or None")
+        if self.stress is not None and self.stress not in {"-2", "-1", "1", "2"}:
+            raise ValueError("stress must be one of '-2', '-1', '1', or '2'")
+
+
+@dataclass(frozen=True, slots=True)
+class LinguisticToken:
+    start: int
+    end: int
+    text: str | None = None
+    pos: str | None = None
+    tag: str | None = None
+    lemma: str | None = None
+    language: str | None = None
+    morph: str | None = None
+
+    def __post_init__(self) -> None:
+        _valid_span(self.start, self.end)
+        for name in ("text", "pos", "tag", "lemma", "language", "morph"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"{name} must be a string or None")
+
+
+@dataclass(frozen=True, slots=True)
+class SynthesisSegment:
+    id: str
+    text: str
+    language: str
+    speaker: int | str | None = None
+    pronunciation_overrides: tuple[PronunciationOverride, ...] = ()
+    annotations: tuple[LinguisticToken, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str) or not self.id:
+            raise ValueError("id must be a non-empty string")
+        if not isinstance(self.text, str):
+            raise ValueError("text must be a string")
+        if not isinstance(self.language, str) or not self.language:
+            raise ValueError("language must be a non-empty string")
+        if self.speaker is not None and (
+            isinstance(self.speaker, bool) or not isinstance(self.speaker, (int, str))
+        ):
+            raise ValueError("speaker must be an integer, name, or None")
+        if isinstance(self.speaker, str) and not self.speaker:
+            raise ValueError("speaker name must be non-empty")
+        overrides = tuple(self.pronunciation_overrides)
+        annotations = tuple(self.annotations)
+        if any(not isinstance(item, PronunciationOverride) for item in overrides):
+            raise TypeError("pronunciation_overrides must contain PronunciationOverride values")
+        if any(not isinstance(item, LinguisticToken) for item in annotations):
+            raise TypeError("annotations must contain LinguisticToken values")
+        for override in overrides:
+            if override.end > len(self.text):
+                raise ValueError("pronunciation override span exceeds text length")
+        for annotation in annotations:
+            if annotation.end > len(self.text):
+                raise ValueError("annotation span exceeds text length")
+            if (
+                annotation.text is not None
+                and self.text[annotation.start : annotation.end] != annotation.text
+            ):
+                raise ValueError("annotation text does not match its source span")
+        object.__setattr__(self, "pronunciation_overrides", overrides)
+        object.__setattr__(self, "annotations", annotations)
+
+
 @dataclass(frozen=True, slots=True)
 class SynthesisConfig:
-    """Per-call acoustic inference and output controls."""
+    """Per-request Piper inference and engine-local output controls."""
 
-    speaker_id: int | None = None
     length_scale: float | None = None
     noise_scale: float | None = None
     noise_w_scale: float | None = None
     normalize_audio: bool = True
-    volume: float = 1.0
-    noise_w: float | None = None
-
-    loudness: LoudnessConfig = field(default_factory=LoudnessConfig)
+    output_gain: float = 1.0
+    voice_level: VoiceLevelConfig = field(default_factory=VoiceLevelConfig)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.loudness, LoudnessConfig):
-            raise InvalidSynthesisConfigError("loudness must be a LoudnessConfig")
-        if self.speaker_id is not None and (
-            isinstance(self.speaker_id, bool) or not isinstance(self.speaker_id, int)
-        ):
-            raise InvalidSynthesisConfigError("speaker_id must be an integer or None")
         if self.length_scale is not None:
             _finite(self.length_scale, "length_scale", minimum=np.finfo(float).tiny)
         if self.noise_scale is not None:
             _finite(self.noise_scale, "noise_scale", minimum=0.0)
         if self.noise_w_scale is not None:
             _finite(self.noise_w_scale, "noise_w_scale", minimum=0.0)
-        if self.noise_w is not None:
-            if self.noise_w_scale is not None:
-                raise InvalidSynthesisConfigError("noise_w and noise_w_scale cannot both be set")
-            _finite(self.noise_w, "noise_w", minimum=0.0)
-            warn_external(
-                "noise_w is deprecated; use noise_w_scale instead",
-                DeprecationWarning,
-            )
         if not isinstance(self.normalize_audio, bool):
             raise InvalidSynthesisConfigError("normalize_audio must be a bool")
-        _finite(self.volume, "volume", minimum=0.0)
-
-    @property
-    def resolved_noise_w_scale(self) -> float | None:
-        return self.noise_w_scale if self.noise_w is None else self.noise_w
+        _finite(self.output_gain, "output_gain", minimum=0.0)
+        if not isinstance(self.voice_level, VoiceLevelConfig):
+            raise InvalidSynthesisConfigError("voice_level must be a VoiceLevelConfig")
 
 
-@dataclass(slots=True, init=False)
-class AudioChunk:
-    """One synthesized sentence or audio unit."""
-
+@dataclass(slots=True)
+class RenderedChunk:
+    index: int
+    audio: np.ndarray
     sample_rate: int
-    audio_float_array: np.ndarray
+    segment_id: str
     phonemes: tuple[str, ...] = ()
     phoneme_ids: tuple[int, ...] = ()
     warnings: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def __init__(
-        self,
-        sample_rate: int,
-        audio_float_array: np.ndarray | None = None,
-        phonemes: tuple[str, ...] = (),
-        phoneme_ids: tuple[int, ...] = (),
-        warnings: tuple[str, ...] = (),
-        metadata: dict[str, Any] | None = None,
-        *,
-        audio: np.ndarray | None = None,
-    ) -> None:
-        if audio_float_array is not None and audio is not None:
-            raise ValueError("audio and audio_float_array cannot both be set")
-        value = audio_float_array if audio_float_array is not None else audio
-        if value is None:
-            raise TypeError("audio_float_array is required")
-        if isinstance(sample_rate, bool) or not isinstance(sample_rate, int) or sample_rate <= 0:
-            raise ValueError("sample_rate must be a positive integer")
-        array = np.asarray(value, dtype=np.float32)
-        if array.ndim != 1:
-            raise ModelInferenceError(f"audio must be one-dimensional, got shape {array.shape}")
-        if not np.all(np.isfinite(array)):
-            raise ModelInferenceError("audio contains non-finite samples")
-        self.sample_rate = sample_rate
-        self.audio_float_array = array
-        self.phonemes = tuple(phonemes)
-        self.phoneme_ids = tuple(phoneme_ids)
-        self.warnings = tuple(warnings)
-        self.metadata = dict(metadata or {})
-
-    @property
-    def audio(self) -> np.ndarray:
-        return self.audio_float_array
-
-    @audio.setter
-    def audio(self, value: np.ndarray) -> None:
-        self.audio_float_array = np.asarray(value, dtype=np.float32)
-
-    @property
-    def sample_width(self) -> int:
-        return 2
-
-    @property
-    def sample_channels(self) -> int:
-        return 1
-
-    @property
-    def audio_int16_array(self) -> np.ndarray:
-        return float_to_int16(self.audio_float_array)
-
-    @property
-    def audio_int16_bytes(self) -> bytes:
-        return audio_to_int16_bytes(self.audio_float_array)
-
-    @property
-    def duration_seconds(self) -> float:
-        return self.audio_float_array.size / self.sample_rate
-
-    @property
-    def int16(self) -> np.ndarray:
-        return self.audio_int16_array
-
-    @property
-    def int16_bytes(self) -> bytes:
-        return self.audio_int16_bytes
+    def __post_init__(self) -> None:
+        if isinstance(self.index, bool) or not isinstance(self.index, int) or self.index < 0:
+            raise ValueError("index must be a non-negative integer")
+        if not isinstance(self.segment_id, str) or not self.segment_id:
+            raise ValueError("segment_id must be a non-empty string")
+        _validate_rate(self.sample_rate)
+        self.audio = _validated_audio(self.audio, name="chunk audio")
+        self.phonemes = tuple(self.phonemes)
+        self.phoneme_ids = tuple(self.phoneme_ids)
+        self.warnings = tuple(self.warnings)
+        self.metadata = dict(self.metadata)
 
 
 @dataclass(slots=True)
-class AudioResult:
-    """Owned final audio and provenance for one pipeline run."""
-
+class RenderedSegment:
+    id: str
     audio: np.ndarray
     sample_rate: int
-    source_text: str
-    prepared_text: str
-    plan: UtterancePlan | None = None
-    plan_id: str | None = None
-    chunks: list[AudioChunk] = field(default_factory=list)
-    markers: list[dict[str, Any]] = field(default_factory=list)
+    text: str
+    language: str
+    speaker_id: int | None
+    phonemes: tuple[str, ...]
+    phoneme_ids: tuple[int, ...]
     warnings: tuple[str, ...] = ()
+    chunks: tuple[RenderedChunk, ...] = ()
     diagnostics: RuntimeDiagnostics | None = None
-    timing: TimingDiagnostics | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        self.audio = np.asarray(self.audio, dtype=np.float32)
-        if self.audio.ndim != 1 or not np.all(np.isfinite(self.audio)):
-            raise ModelInferenceError("result audio must be one-dimensional and finite")
-        self.chunks = list(self.chunks)
+        if not isinstance(self.id, str) or not self.id:
+            raise ValueError("id must be a non-empty string")
+        if not isinstance(self.text, str):
+            raise ValueError("text must be a string")
+        if not isinstance(self.language, str) or not self.language:
+            raise ValueError("language must be a non-empty string")
+        if self.speaker_id is not None and (
+            isinstance(self.speaker_id, bool)
+            or not isinstance(self.speaker_id, int)
+            or self.speaker_id < 0
+        ):
+            raise ValueError("speaker_id must be a non-negative integer or None")
+        _validate_rate(self.sample_rate)
+        self.audio = _validated_audio(self.audio, name="result audio")
+        self.phonemes = tuple(self.phonemes)
+        self.phoneme_ids = tuple(self.phoneme_ids)
         self.warnings = tuple(self.warnings)
+        self.chunks = tuple(self.chunks)
         self.metadata = dict(self.metadata)
-        self.markers = list(self.markers)
+        if any(not isinstance(chunk, RenderedChunk) for chunk in self.chunks):
+            raise TypeError("chunks must contain RenderedChunk values")
 
     @property
     def duration_seconds(self) -> float:
@@ -183,91 +230,5 @@ class AudioResult:
         return audio_to_int16_bytes(self.audio)
 
     def save_wav(self, target: str | Path | BinaryIO) -> str | Path | BinaryIO:
-        if isinstance(target, (str, Path)):
-            compose_write_wav(target, self.audio, self.sample_rate)
-        else:
-            write_wav(target, self.audio, self.sample_rate)
+        write_wav(target, self.audio, self.sample_rate)
         return target
-
-    def play(self, *, wait: bool = True) -> None:
-        """Play this result using the optional sounddevice dependency."""
-
-        try:
-            import sounddevice as sd
-        except ModuleNotFoundError as exc:
-            raise OptionalDependencyError(
-                "Audio playback requires sounddevice. Install pipersynth[playback]."
-            ) from exc
-        sd.play(self.audio, self.sample_rate, blocking=wait)
-
-    def release_audio(self) -> None:
-        self.audio = np.zeros(0, dtype=np.float32)
-        self.chunks.clear()
-
-
-@dataclass(frozen=True, slots=True)
-class AudioUnitDescriptor:
-    """Stable metadata describing a streamable audio unit."""
-
-    index: int
-    unit_kind: Literal["sentence", "paragraph"]
-    text: str
-    char_start: int | None = None
-    char_end: int | None = None
-    plan_unit_id: str | None = None
-    content_hash: str | None = None
-    segment_ids: tuple[str, ...] = ()
-    marker_ids: tuple[str, ...] = ()
-
-
-@dataclass(slots=True)
-class AudioUnitResult:
-    """Audio and metadata for one streamable unit."""
-
-    descriptor: AudioUnitDescriptor
-    audio: np.ndarray
-    sample_rate: int
-    phonemes: tuple[str, ...]
-    phoneme_ids: tuple[int, ...]
-    warnings: tuple[str, ...] = ()
-    metadata: dict[str, Any] = field(default_factory=dict)
-    plan_unit_id: str | None = None
-    segment_ids: tuple[str, ...] = ()
-    marker_ids: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        self.audio = np.asarray(self.audio, dtype=np.float32)
-        if self.audio.ndim != 1 or not np.all(np.isfinite(self.audio)):
-            raise ModelInferenceError("unit audio must be one-dimensional and finite")
-        self.phonemes = tuple(self.phonemes)
-        self.phoneme_ids = tuple(self.phoneme_ids)
-        self.warnings = tuple(self.warnings)
-        self.metadata = dict(self.metadata)
-        self.segment_ids = tuple(self.segment_ids)
-        self.marker_ids = tuple(self.marker_ids)
-
-    @property
-    def audio_int16_array(self) -> np.ndarray:
-        return float_to_int16(self.audio)
-
-    @property
-    def audio_int16_bytes(self) -> bytes:
-        return audio_to_int16_bytes(self.audio)
-
-    @property
-    def duration_seconds(self) -> float:
-        return self.audio.size / self.sample_rate
-
-    def play(self, *, wait: bool = True) -> None:
-        """Play this unit using the optional sounddevice dependency."""
-
-        try:
-            import sounddevice as sd
-        except ModuleNotFoundError as exc:
-            raise OptionalDependencyError(
-                "Audio playback requires sounddevice. Install pipersynth[playback]."
-            ) from exc
-        sd.play(self.audio, self.sample_rate, blocking=wait)
-
-    def release_audio(self) -> None:
-        self.audio = np.zeros(0, dtype=np.float32)

@@ -1,26 +1,18 @@
-"""Independent synthesis runtime for Piper-compatible ONNX voice models."""
+"""Piper speech-synthesis engine for Piper-compatible ONNX voices."""
 
 from piperg2p import VoiceConfig
-from utterplan import (
-    LinguisticsConfig,
-    PauseConfig,
-    PlannerConfig,
-    SSMDConfig,
-    UtterancePlan,
-    UtterancePlanner,
-)
 
 try:
     from ._version import __version__, __version_tuple__
 except ImportError:
     __version__ = "0.1.1"
     __version_tuple__ = (0, 1, 1)
+
 from .asset_manager import CacheInfo, VoiceAssetManager, list_cached_voices, list_voices
 from .asset_progress import AssetProgressCallback, AssetProgressEvent, ConsoleAssetProgress
 from .assets import VoiceBundle, VoiceMetadata, load_catalog_voice
-from .config import GenerationConfig, PipelineConfig
 from .convenience import synthesize, synthesize_to_wav
-from .diagnostics import RuntimeDiagnostics, TimingDiagnostics
+from .diagnostics import RuntimeDiagnostics
 from .errors import (
     AssetCacheError,
     AssetDownloadError,
@@ -35,23 +27,21 @@ from .errors import (
     OfflineAssetError,
     OptionalDependencyError,
     PiperSynthError,
-    PlanRenderingError,
-    PlanSampleRateMismatchError,
     SessionCreationError,
     SynthesisError,
-    TextPreparationError,
     UnsupportedModelError,
-    UnsupportedPlanDirectiveError,
-    UnsupportedPlanLanguageError,
-    VoiceBindingError,
     VoiceClosedError,
     VoiceNotFoundError,
 )
-from .loudness_config import LoudnessConfig, PeakPolicy, VoiceLevelingMode, coerce_loudness
-from .pipeline import PiperPipeline, PreparedAudioSegments, PreparedAudioUnits, build_pipeline
-from .preparation import IdentityTextPreparer, PreparedTextResult, SpokenformTextPreparer
-from .session import ProviderConfig, available_providers
-from .types import AudioChunk, AudioResult, AudioUnitDescriptor, AudioUnitResult, SynthesisConfig
+from .session import ProviderConfig, ProviderSpec, available_providers
+from .types import (
+    LinguisticToken,
+    PronunciationOverride,
+    RenderedChunk,
+    RenderedSegment,
+    SynthesisConfig,
+    SynthesisSegment,
+)
 from .voice import PiperVoice
 from .voice_level import (
     CalibrationDataError,
@@ -59,86 +49,66 @@ from .voice_level import (
     VoiceCalibrationKey,
     VoiceLevelApplication,
     VoiceLevelCalibration,
+    VoiceLevelConfig,
+    VoiceLevelMode,
     apply_voice_level_calibration,
     default_voice_calibration,
     load_voice_calibration,
 )
 
 __all__ = [
-    "AudioChunk",
-    "AudioResult",
-    "AudioUnitDescriptor",
-    "AudioUnitResult",
     "AssetCacheError",
     "AssetDownloadError",
     "AssetError",
     "AssetProgressCallback",
     "AssetProgressEvent",
-    "GenerationConfig",
-    "LinguisticsConfig",
-    "LoudnessConfig",
-    "PeakPolicy",
-    "VoiceLevelingMode",
-    "coerce_loudness",
-    "PauseConfig",
-    "PlannerConfig",
-    "SSMDConfig",
-    "UtterancePlan",
-    "UtterancePlanner",
     "CacheInfo",
-    "VoiceAssetManager",
+    "CalibrationDataError",
     "CatalogUnavailableError",
-    "ConsoleAssetProgress",
-    "IdentityTextPreparer",
-    "PiperPipeline",
-    "PiperSynthError",
-    "PlanRenderingError",
-    "PlanSampleRateMismatchError",
     "ConfigFileNotFoundError",
+    "ConsoleAssetProgress",
     "InvalidSpeakerError",
     "InvalidSynthesisConfigError",
+    "LinguisticToken",
     "ModelFileNotFoundError",
     "ModelInferenceError",
-    "CalibrationDataError",
-    "VoiceCalibrationCatalog",
-    "VoiceCalibrationKey",
-    "VoiceLevelApplication",
-    "VoiceLevelCalibration",
-    "apply_voice_level_calibration",
-    "default_voice_calibration",
-    "load_voice_calibration",
     "ModelLoadError",
-    "OptionalDependencyError",
     "OfflineAssetError",
+    "OptionalDependencyError",
+    "PiperSynthError",
     "PiperVoice",
-    "PipelineConfig",
-    "PreparedAudioSegments",
-    "PreparedAudioUnits",
-    "PreparedTextResult",
+    "PronunciationOverride",
     "ProviderConfig",
+    "ProviderSpec",
+    "RenderedChunk",
+    "RenderedSegment",
     "RuntimeDiagnostics",
     "SessionCreationError",
-    "SynthesisError",
-    "TextPreparationError",
-    "TimingDiagnostics",
-    "UnsupportedModelError",
-    "UnsupportedPlanDirectiveError",
-    "UnsupportedPlanLanguageError",
-    "VoiceBindingError",
-    "VoiceClosedError",
-    "SpokenformTextPreparer",
     "SynthesisConfig",
+    "SynthesisError",
+    "SynthesisSegment",
+    "UnsupportedModelError",
+    "VoiceAssetManager",
     "VoiceBundle",
+    "VoiceCalibrationCatalog",
+    "VoiceCalibrationKey",
+    "VoiceClosedError",
     "VoiceConfig",
+    "VoiceLevelApplication",
+    "VoiceLevelCalibration",
+    "VoiceLevelConfig",
+    "VoiceLevelMode",
     "VoiceMetadata",
     "VoiceNotFoundError",
-    "available_providers",
-    "build_pipeline",
-    "list_cached_voices",
-    "load_catalog_voice",
-    "list_voices",
-    "synthesize",
-    "synthesize_to_wav",
     "__version__",
     "__version_tuple__",
+    "apply_voice_level_calibration",
+    "available_providers",
+    "default_voice_calibration",
+    "list_cached_voices",
+    "list_voices",
+    "load_catalog_voice",
+    "load_voice_calibration",
+    "synthesize",
+    "synthesize_to_wav",
 ]

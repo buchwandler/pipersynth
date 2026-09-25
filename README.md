@@ -1,178 +1,116 @@
 # PiperSynth
 
-PiperSynth is an application-facing Python synthesis library for Piper-compatible ONNX voices. It uses `piperg2p` for voice configuration and phonemization, `OnnxVoice` for model assets and ONNX execution, and `AudioCompose` for generic audio composition and AudioJob persistence. It does not depend on the upstream Piper runtime or `piper-tts`.
+PiperSynth is a standalone synthesis engine for Piper-compatible ONNX voices. It accepts prepared, speakable text, applies Piper-specific frontend and acoustic policy, calls OnnxVoice for inference, and returns independent rendered speech. PiperG2P owns text phonemization and Piper ID generation. Document parsing, SSMD, written-to-spoken preparation, semantic pauses, markers, timeline composition, and final mastering belong to other layers.
 
-## Quick start
+## Install
 
-Install the CPU runtime and catalog support:
+Install PiperSynth with the CPU runtime:
 
 ```bash
 pip install "pipersynth[cpu]"
 ```
 
-Generate a WAV from a catalog voice:
+For GPU inference, install `pipersynth[gpu]`. OnnxVoice manages catalog lookup, model downloads, caching, provider selection, and ONNX Runtime sessions.
+
+## Synthesize prepared text
 
 ```python
-from pipersynth import synthesize_to_wav
+from pipersynth import PiperVoice
 
-synthesize_to_wav(
-    "Hello, this sentence was generated with PiperSynth.",
-    "hello.wav",
-    voice="en_US-lessac-medium",
+with PiperVoice.from_pretrained("en_US-lessac-medium") as voice:
+    result = voice.synthesize_text(
+        "Hello, this text is already prepared for speech.",
+        language="en-us",
+    )
+    result.save_wav("hello.wav")
+```
+
+`prepared_text` is ordinary speakable text, not phoneme IDs. PiperSynth does not expand numbers, dates, abbreviations, or other written forms. Perform that semantic preparation before calling the engine.
+
+For repeated requests, reuse one voice:
+
+```python
+from pipersynth import PiperVoice, SynthesisConfig
+
+with PiperVoice.from_pretrained("en_US-lessac-medium", offline=True) as voice:
+    result = voice.synthesize_text(
+        "A second prepared request.",
+        language="en-us",
+        config=SynthesisConfig(length_scale=0.9, output_gain=0.8),
+    )
+```
+
+Use `PiperVoice.from_local("voice.onnx")` to open a local model. By default, PiperSynth reads its config from `voice.onnx.json`.
+
+## Typed requests and linguistic context
+
+Use `SynthesisSegment` when a request has an explicit identity, speaker, pronunciation override, or external token annotation:
+
+```python
+from pipersynth import (
+    LinguisticToken,
+    PiperVoice,
+    PronunciationOverride,
+    SynthesisSegment,
 )
+
+segment = SynthesisSegment(
+    id="line-001",
+    text="I read the book yesterday.",
+    language="en-us",
+    pronunciation_overrides=(PronunciationOverride(2, 6, phonemes="ɹɛd"),),
+    annotations=(
+        LinguisticToken(
+            start=2,
+            end=6,
+            text="read",
+            pos="VERB",
+            lemma="read",
+            morph="Tense=Past",
+        ),
+    ),
+)
+
+with PiperVoice.from_pretrained("en_US-lessac-medium") as voice:
+    result = voice.synthesize(segment)
 ```
 
-On first use OnnxVoice fetches the Piper catalog and installs the selected model, matching config, and any model card into its shared local store. Later calls reuse that installation. The convenience call creates a fresh pipeline and closes it before returning.
-For repeated synthesis, reuse one pipeline and one ONNX session:
+Offsets use Python half-open ranges into the exact prepared string. PiperSynth forwards annotation fields, including `morph`, to PiperG2P. Speaker names and numeric IDs identify speakers within the active Piper model, not document roles.
 
-```python
-from pipersynth import PiperPipeline
+## Streaming and low-level IDs
 
-with PiperPipeline.from_pretrained("en_US-lessac-medium") as pipe:
-    pipe("One.").save_wav("one.wav")
-    pipe("Two.").save_wav("two.wav")
-```
+`PiperVoice.iter_chunks()` yields request-local chunks for nonempty PiperG2P sentence groups. It inserts no semantic silence. `PiperVoice.synthesize()` joins those chunks into one `RenderedSegment`.
 
-Use cached assets only with `offline=True`:
+`PiperVoice.synthesize_ids()` remains available for callers that already have Piper phoneme IDs. ID validation, speaker selection, acoustic controls, voice calibration, and waveform postprocessing still apply.
 
-```python
-with PiperPipeline.from_pretrained("en_US-lessac-medium", offline=True) as pipe:
-    pipe("This uses cached assets only.").save_wav("offline.wav")
-```
+## Audio and calibration
 
-## Planning and rendering
+Results contain mono finite `float32` audio at the model's native sample rate. `RenderedSegment.save_wav()` writes mono 16-bit PCM. Conversion clips to the supported PCM range.
 
-`PiperPipeline.plan()` compiles text into an immutable `UtterancePlan`. The UtterPlan planner owns document parsing, Spokenform, SSMD, language runs, semantic units, markers, and resolved pauses. Rendering an existing plan never replans it, so the same plan can be rendered repeatedly with different acoustic overrides:
+`SynthesisConfig` contains Piper controls (`length_scale`, `noise_scale`, and `noise_w_scale`), optional peak normalization, explicit engine-local `output_gain`, and static `voice_level` calibration. PiperSynth does not perform final LUFS or true-peak mastering. Use AudioCompose or another output layer when producing a document, chapter, or mixed timeline.
 
-```python
-with PiperPipeline.from_pretrained("en_US-lessac-medium") as pipe:
-    plan = pipe.plan("One. Two.", unit="sentence")
-    plan.save("speech.utterplan.json")
-    normal = pipe.render_plan(plan, length_scale=1.0)
-    fast = pipe.render_plan(plan, length_scale=0.9)
-```
-
-## AudioJob production and replay
-
-An existing plan can be converted to a generic, persisted AudioJob without composing it in PiperSynth:
-
-```python
-job = pipe.to_audio_job(plan)
-manifest = job.save("speech.audiojob")
-```
-
-`AudioClip` IDs preserve UtterPlan segment IDs. Resolved semantic pauses are explicit `Silence` items, and the job includes an explicit compatibility output policy. Replay is producer-neutral:
-
-```python
-from audiocompose import AudioJob, Composer
-
-job = AudioJob.load("speech.audiojob/audiojob.json")
-composition = Composer().compose(job)
-```
-
-The normal `render_plan()` API builds and composes this job exactly once, then adapts the composed waveform back to `AudioResult`. Streaming APIs remain a separate batch-independent path.
-
-## Runnable examples
-
-The maintained examples use catalog voices and require no manual model download.
-They explicitly create and persist an `UtterancePlan` before rendering it. Generated plans
-and WAV files are written below `example-artefacts/`. See [`examples/README.md`](examples/README.md).
-
-```bash
-python examples/basic.py
-python examples/run_all.py
-```
-
-Use `is_phonemes=True` only for direct Piper phoneme input. It bypasses UtterPlan and does not attach a semantic plan to the result.
-
-## Local models
-
-Existing explicit local model usage remains network-free:
-
-```python
-from pipersynth import PiperPipeline, PipelineConfig
-
-with PiperPipeline(PipelineConfig(model_path="voice.onnx")) as pipe:
-    pipe("No network is used here.").save_wav("local.wav")
-```
-
-`PiperVoice.load()` and `PiperPipeline(PipelineConfig(...))` never resolve the catalog or download assets. Use `PiperVoice.from_pretrained()` or `PiperPipeline.from_pretrained()` when managed catalog resources are desired.
-
-## Calibrated voice leveling
-
-PiperSynth can apply a fixed, offline-measured gain for an exact managed Piper catalog voice, quality, and numeric speaker identity:
-
-```python
-from pipersynth import LoudnessConfig, PiperPipeline
-
-with PiperPipeline.from_pretrained(
-    "en_US-lessac-medium",
-    loudness=LoudnessConfig(voice_leveling="calibrated"),
-) as pipe:
-    result = pipe.run("Hello from PiperSynth.")
-```
-
-Calibrated voice leveling is not dynamic normalization: synthesis never measures LUFS and the gain does not guarantee a final LUFS value for arbitrary text. It is applied after legacy peak normalization, before user or SSMD volume, and before the final clamp. `voice_gain_db` is an explicit gain override and works for managed and local voices.
-
-Calibration keys are canonical `piper:model-id:quality:speaker-N` identities. Every speaker in a multi-speaker catalog model is measured independently; single-speaker models use `speaker-0`. Anonymous local models have no guessed catalog key, and missing records are safe no-ops with diagnostic metadata.
-
-Complete-output normalization remains separate. Set `target_lufs` in `LoudnessConfig` only for batch composition; true streaming APIs reject it rather than normalizing each unit independently.
-
-The packaged catalog is generated from corpus `pipersynth-count-1-to-10-v1` at reference `-24 LUFS` with a `-1 dBTP` calibration ceiling. To regenerate it, run the full unfiltered benchmark, review `summary.md`, then promote its report with `benchmarks/voice_loudness_calibration.py`. Benchmark output is written below `benchmarks/output/` and never overwrites production data automatically.
-
-## Voice discovery and cache
+## Voice discovery and providers
 
 ```python
 from pipersynth import VoiceAssetManager, list_voices
 
-for voice in list_voices(language="en", quality="medium"):
-    print(voice.id, voice.name)
+for item in list_voices(language="en", quality="medium"):
+    print(item.id, item.name)
 
-manager = VoiceAssetManager()
-metadata = manager.get_voice_metadata("en_US-lessac-medium")
-bundle = manager.resolve_voice("en_US-lessac-medium")
-print(bundle.model_card_text)
+manager = VoiceAssetManager(offline=True)
+print(manager.get_voice_metadata("en_US-lessac-medium"))
 ```
 
-Set `ONNXVOICE_CACHE_DIR` or pass `cache_dir=` explicitly to control the OnnxVoice store. `PIPERSYNTH_CACHE_DIR` remains accepted as a PiperSynth compatibility alias. Set `PIPERSYNTH_OFFLINE=1` for process-wide offline operation. Explicit `offline=` arguments take precedence.
+The default inference provider is `CPUExecutionProvider`. Pass `providers` and `provider_options` to `PiperVoice.from_pretrained()` or `PiperVoice.from_local()` to select runtime providers. See [provider configuration](docs/providers.md).
 
-OnnxVoice owns installed artifacts, manifests, checksums, and locks. PiperSynth's `VoiceAssetManager` and `VoiceBundle` are compatibility views over that store. Voice licenses apply to the downloaded model and are not part of the PiperSynth Apache-2.0 license.
+## Examples and development
 
-The Python API provides catalog and cache operations:
+Runnable examples are under [`examples/`](examples/). They synthesize prepared text with `PiperVoice`; generated files are written below `example-artefacts/` by default.
 
-```python
-from pipersynth import VoiceAssetManager
+Run validation with:
 
-manager = VoiceAssetManager()
-
-# List voices
-for voice in manager.list_voices(language="en", quality="medium"):
-    print(voice.id, voice.name)
-
-# Get voice metadata
-metadata = manager.get_voice_metadata("en_US-lessac-medium")
-print(metadata.id, metadata.name, metadata.language_code, metadata.quality)
-
-# Download/resolve a voice
-bundle = manager.resolve_voice("en_US-lessac-medium")
-print(bundle.directory)
-print(bundle.model_card_text)
-
-# Cache operations
-print(manager.cache_info())
-for cached in manager.cached_voices():
-    print(cached.directory)
-
-# Destructive operations (use with caution)
-# manager.remove_voice("en_US-lessac-medium")
-# manager.prune()
-# manager.clear(voices=True)
+```bash
+python -m pytest
+python -m ruff check pipersynth tests examples benchmarks
+python -m mypy pipersynth tests/typecheck/engine_api.py
 ```
-
-## Optional features
-
-The UtterPlan dependency provides Spokenform and SSMD planning. Install `pipersynth[playback]` for `AudioResult.play()` and streaming playback, or `pipersynth[gpu]` for the OnnxVoice GPU provider. Catalog support is provided by OnnxVoice and is also available as `pipersynth[catalog]`.
-
-The core API supports sentence and paragraph units through UtterPlan, resolved semantic pauses, plan save/load, and PCM iteration through `iter_pcm()`. It does not claim generic voice blending, approximate word timings, hidden language detection, model conversion, training, quantization, or HTTP serving.
-
-See [`docs/architecture.md`](docs/architecture.md), [`docs/providers.md`](docs/providers.md), [`docs/troubleshooting.md`](docs/troubleshooting.md), and [`examples/download_and_synthesize.py`](examples/download_and_synthesize.py).

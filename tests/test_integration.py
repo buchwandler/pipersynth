@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import wave
 from pathlib import Path
@@ -13,14 +15,14 @@ def test_real_voice_smoke_when_asset_is_configured() -> None:
     model = os.environ.get("PIPERSYNTH_VOICE_MODEL")
     if not model:
         pytest.skip("set PIPERSYNTH_VOICE_MODEL to run a real voice smoke test")
-    runtime = pytest.importorskip("onnxruntime")
-    del runtime
-    with PiperVoice.load(Path(model)) as voice:
-        chunks = list(voice.synthesize("Hello world."))
-    assert chunks
-    assert chunks[0].audio.dtype == np.float32
-    assert chunks[0].audio.ndim == 1
-    assert np.all(np.isfinite(chunks[0].audio))
+    pytest.importorskip("onnxruntime")
+    language = os.environ.get("PIPERSYNTH_VOICE_LANGUAGE", "en-us")
+    with PiperVoice.from_local(Path(model)) as voice:
+        result = voice.synthesize_text("Hello world.", language=language)
+    assert result.chunks
+    assert result.audio.dtype == np.float32
+    assert result.audio.ndim == 1
+    assert np.all(np.isfinite(result.audio))
 
 
 @pytest.mark.integration
@@ -35,6 +37,7 @@ def test_catalog_voice_download_and_offline_reuse(tmp_path: Path, monkeypatch) -
         "Hello from PiperSynth.",
         tmp_path / "hello.wav",
         voice="en_US-lessac-medium",
+        language="en-us",
         cache_dir=cache_dir,
     )
     assert output.exists() and output.stat().st_size > 44
@@ -47,6 +50,7 @@ def test_catalog_voice_download_and_offline_reuse(tmp_path: Path, monkeypatch) -
         "Hello from PiperSynth.",
         tmp_path / "offline.wav",
         voice="en_US-lessac-medium",
+        language="en-us",
         cache_dir=cache_dir,
         offline=True,
     )

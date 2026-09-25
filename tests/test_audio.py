@@ -1,54 +1,56 @@
+from __future__ import annotations
+
 import wave
 from io import BytesIO
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from pipersynth import AudioChunk
-from pipersynth.audio import float_to_int16, postprocess_audio, silence_samples, write_wav
+from pipersynth.audio import (
+    audio_to_int16_bytes,
+    finish_audio,
+    float_to_int16,
+    prepare_audio,
+    write_wav,
+)
 from pipersynth.errors import ModelInferenceError
 
 
-def test_pcm_conversion_clips_and_maps_normalized_values() -> None:
-    assert float_to_int16(np.array([-1.0, 0.0, 1.0], dtype=np.float32)).tolist() == [
-        -32767,
-        0,
-        32767,
-    ]
-    assert float_to_int16(np.array([-2.0, 2.0], dtype=np.float32)).tolist() == [-32767, 32767]
+def test_prepare_audio_validates_and_optionally_normalizes_peak() -> None:
+    original = np.array([2.0, -1.0], dtype=np.float32)
+    normalized = prepare_audio(original, normalize=True)
+    np.testing.assert_allclose(normalized, [1.0, -0.5])
+    np.testing.assert_array_equal(original, [2.0, -1.0])
+    np.testing.assert_array_equal(prepare_audio(original, normalize=False), original)
 
 
-@pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
-def test_pcm_conversion_rejects_nonfinite_values(value: float) -> None:
-    with pytest.raises(ModelInferenceError, match="non-finite"):
-        float_to_int16(np.array([value], dtype=np.float32))
+def test_finish_audio_applies_explicit_gain_and_clips() -> None:
+    audio = np.array([0.5, -0.5], dtype=np.float32)
+    np.testing.assert_allclose(finish_audio(audio, output_gain=0.5), [0.25, -0.25])
+    np.testing.assert_array_equal(finish_audio(audio, output_gain=4.0), [1.0, -1.0])
+    with pytest.raises(ModelInferenceError, match="output_gain"):
+        finish_audio(audio, output_gain=float("nan"))
 
 
-def test_postprocess_normalizes_then_applies_volume_and_clips() -> None:
-    audio = postprocess_audio(np.array([-2.0, 0.5], dtype=np.float32), normalize=True, volume=2.0)
-    assert audio.tolist() == [-1.0, 0.5]
+def test_pcm_conversion_is_deterministic() -> None:
+    audio = np.array([-1.0, 0.0, 1.0], dtype=np.float32)
+    np.testing.assert_array_equal(float_to_int16(audio), [-32767, 0, 32767])
+    assert audio_to_int16_bytes(audio) == float_to_int16(audio).tobytes()
 
 
-def test_silence_sample_count_uses_rounding() -> None:
-    assert silence_samples(22050, 0.1) == 2205
-
-
-def test_wav_writes_mono_pcm_to_file_like_object() -> None:
-    target = BytesIO()
-    write_wav(target, np.array([-1.0, 0.0, 1.0], dtype=np.float32), 22050)
-    target.seek(0)
-    with wave.open(target, "rb") as handle:
-        assert handle.getnchannels() == 1
-        assert handle.getsampwidth() == 2
-        assert handle.getframerate() == 22050
-        assert handle.readframes(3) == np.array([-32767, 0, 32767], dtype="<i2").tobytes()
-
-
-def test_audio_chunk_exposes_public_and_compatibility_properties() -> None:
-    chunk = AudioChunk(22050, np.array([0.0, 0.5], dtype=np.float32))
-    assert chunk.audio is chunk.audio_float_array
-    assert chunk.int16.tolist() == [0, 16383]
-    assert chunk.int16_bytes == chunk.audio_int16_bytes
-    assert chunk.sample_width == 2
-    assert chunk.sample_channels == 1
-    assert chunk.duration_seconds == 2 / 22050
+def test_wav_writer_supports_paths_and_binary_streams(tmp_path: Path) -> None:
+    audio = np.array([0.0, 0.5, -0.5], dtype=np.float32)
+    path = tmp_path / "nested" / "speech.wav"
+    path.parent.mkdir()
+    write_wav(path, audio, 22050)
+    stream = BytesIO()
+    write_wav(stream, audio, 22050)
+    for target in (str(path), stream):
+        if hasattr(target, "seek"):
+            target.seek(0)
+        with wave.open(target, "rb") as wav:
+            assert wav.getnchannels() == 1
+            assert wav.getsampwidth() == 2
+            assert wav.getframerate() == 22050
+            assert wav.getnframes() == 3

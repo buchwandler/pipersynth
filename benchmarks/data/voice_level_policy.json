@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "name": "pipersynth-prepared-speech-v1",
+  "repeats": 3,
+  "reference_lufs": -24.0,
+  "min_gain_db": -12.0,
+  "max_gain_db": 8.0,
+  "max_mad_lu": 0.75
+}

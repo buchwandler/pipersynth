@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 import math
 
 import numpy as np
 
 from pipersynth import (
-    LoudnessConfig,
     VoiceCalibrationKey,
+    VoiceLevelConfig,
     apply_voice_level_calibration,
     default_voice_calibration,
 )
@@ -22,9 +24,8 @@ FAILED_KEYS = {
 }
 
 
-def test_packaged_catalog_has_complete_measured_data():
+def test_packaged_catalog_has_complete_measured_data() -> None:
     catalog = default_voice_calibration()
-
     assert catalog.schema == 1
     assert catalog.method == "bs1770"
     assert catalog.corpus == "pipersynth-count-1-to-10-v1"
@@ -32,7 +33,6 @@ def test_packaged_catalog_has_complete_measured_data():
     assert len(catalog.voices) == 2704
     assert [str(key) for key in catalog.voices] == sorted(str(key) for key in catalog.voices)
     assert not FAILED_KEYS & {str(key) for key in catalog.voices}
-
     for record in catalog.voices.values():
         assert math.isfinite(record.gain_db)
         assert math.isfinite(record.measured_lufs)
@@ -43,7 +43,7 @@ def test_packaged_catalog_has_complete_measured_data():
         assert record.corpus_version == "pipersynth-count-1-to-10-v1"
 
 
-def test_packaged_catalog_contains_representative_measured_identities():
+def test_packaged_catalog_contains_representative_measured_identities() -> None:
     catalog = default_voice_calibration()
     keys = [
         "piper:en_US-lessac-medium:medium:speaker-0",
@@ -53,20 +53,19 @@ def test_packaged_catalog_contains_representative_measured_identities():
         "piper:en_US-libritts_r-medium:medium:speaker-761",
         "piper:bn_BD-google-medium:medium:speaker-2",
     ]
-
     assert all(VoiceCalibrationKey.parse(key) in catalog.voices for key in keys)
     assert catalog.voices[VoiceCalibrationKey.parse(keys[-1])].mad_lu > 0.75
     assert catalog.voices[VoiceCalibrationKey.parse(keys[4])].gain_db < -12.0
 
 
-def test_runtime_lookup_uses_packaged_data_and_preserves_override_precedence():
+def test_runtime_lookup_uses_catalog_and_explicit_gain_override() -> None:
     catalog = default_voice_calibration()
     key = VoiceCalibrationKey.parse("piper:en_US-lessac-medium:medium:speaker-0")
     record = catalog.voices[key]
     audio = np.array([0.25, -0.25], dtype=np.float32)
 
     leveled, application = apply_voice_level_calibration(
-        audio, LoudnessConfig(voice_leveling="calibrated"), key
+        audio, VoiceLevelConfig(mode="calibrated"), key
     )
     assert application.source == "catalog"
     assert application.key == key
@@ -74,26 +73,24 @@ def test_runtime_lookup_uses_packaged_data_and_preserves_override_precedence():
     np.testing.assert_allclose(leveled, audio * 10 ** (record.gain_db / 20))
 
     overridden, application = apply_voice_level_calibration(
-        audio, LoudnessConfig(voice_leveling="calibrated", voice_gain_db=-1.0), key
+        audio, VoiceLevelConfig(mode="calibrated", gain_db=-1.0), key
     )
     assert application.source == "override"
     assert application.gain_db == -1.0
     np.testing.assert_allclose(overridden, audio * 10 ** (-1.0 / 20))
 
-    unchanged, application = apply_voice_level_calibration(audio, LoudnessConfig(), key)
+    unchanged, application = apply_voice_level_calibration(audio, VoiceLevelConfig(), key)
     assert application.source == "off"
     assert application.gain_db == 0.0
     np.testing.assert_array_equal(unchanged, audio)
 
 
-def test_failed_identity_uses_missing_calibration_runtime_path():
+def test_missing_catalog_identity_leaves_audio_unchanged() -> None:
     key = VoiceCalibrationKey.parse("piper:ar_JO-kareem-low:low:speaker-0")
     audio = np.array([0.25, -0.25], dtype=np.float32)
-
     result, application = apply_voice_level_calibration(
-        audio, LoudnessConfig(voice_leveling="calibrated"), key
+        audio, VoiceLevelConfig(mode="calibrated"), key
     )
-
     assert application.source == "missing_calibration"
     assert application.gain_db == 0.0
     assert application.key == key

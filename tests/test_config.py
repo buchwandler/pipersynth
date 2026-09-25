@@ -1,33 +1,37 @@
-import warnings
+from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from pipersynth import SynthesisConfig
+from pipersynth import SynthesisConfig, VoiceLevelConfig
 from pipersynth.errors import InvalidSynthesisConfigError
 
 
-def test_synthesis_config_accepts_valid_values() -> None:
+def test_synthesis_config_accepts_engine_controls() -> None:
     config = SynthesisConfig(
-        speaker_id=2,
         length_scale=1.0,
         noise_scale=0.5,
         noise_w_scale=0.8,
-        volume=1.25,
+        normalize_audio=False,
+        output_gain=1.25,
+        voice_level=VoiceLevelConfig(mode="calibrated", gain_db=-1.0),
     )
-    assert config.resolved_noise_w_scale == 0.8
+    assert config.length_scale == 1.0
+    assert config.noise_scale == 0.5
+    assert config.noise_w_scale == 0.8
+    assert config.output_gain == 1.25
+    assert config.voice_level.gain_db == -1.0
 
 
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"speaker_id": True},
         {"length_scale": 0.0},
         {"length_scale": np.inf},
         {"noise_scale": -1.0},
         {"noise_w_scale": np.nan},
-        {"volume": -0.1},
-        {"volume": True},
+        {"output_gain": -0.1},
+        {"output_gain": True},
         {"normalize_audio": 1},
     ],
 )
@@ -36,14 +40,7 @@ def test_synthesis_config_rejects_invalid_values(kwargs: dict[str, object]) -> N
         SynthesisConfig(**kwargs)
 
 
-def test_noise_w_is_a_deprecated_compatibility_alias() -> None:
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        config = SynthesisConfig(noise_w=0.7)
-    assert config.resolved_noise_w_scale == 0.7
-    assert any(item.category is DeprecationWarning for item in caught)
-
-
-def test_noise_alias_conflict_is_rejected() -> None:
-    with pytest.raises(InvalidSynthesisConfigError):
-        SynthesisConfig(noise_w=0.7, noise_w_scale=0.8)
+def test_removed_aliases_and_document_controls_are_not_accepted() -> None:
+    for name in ("noise_w", "speaker_id", "volume", "sentence_silence", "loudness"):
+        with pytest.raises(TypeError):
+            SynthesisConfig(**{name: 1.0})

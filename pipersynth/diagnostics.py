@@ -21,31 +21,10 @@ class RuntimeDiagnostics:
     model_inputs: tuple[str, ...] = ()
     model_outputs: tuple[str, ...] = ()
     frontend: str | None = None
-    plan_id: str | None = None
-    utterplan_producer: dict[str, Any] | None = None
-    utterplan_schema_version: int | None = None
     voice_id: str | None = None
     voice_source_revision: str | None = None
     warnings: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible diagnostic mapping."""
-
-        return asdict(self)
-
-
-@dataclass(frozen=True, slots=True)
-class TimingDiagnostics:
-    """Optional stable timing measurements in milliseconds."""
-
-    planning_ms: float | None = None
-    g2p_ms: float | None = None
-    inference_ms: float | None = None
-    prepare_text_ms: float | None = None
-    phonemize_ms: float | None = None
-    composition_ms: float | None = None
-    postprocess_ms: float | None = None
-    total_ms: float | None = None
-
-    def to_dict(self) -> dict[str, float | None]:
         return asdict(self)

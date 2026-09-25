@@ -1,48 +1,38 @@
+from __future__ import annotations
+
 import subprocess
 import sys
 
 
-def test_package_import_does_not_import_onnxruntime() -> None:
+def test_removed_document_dependencies_and_modules_are_not_required() -> None:
+    command = """\
+import importlib.abc
+import importlib.util
+import sys
+
+blocked = {"utterplan", "audiocompose", "ssmd"}
+
+class BlockRemovedDependencies(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.partition(".")[0] in blocked:
+            raise ModuleNotFoundError(fullname)
+        return None
+
+sys.meta_path.insert(0, BlockRemovedDependencies())
+import pipersynth
+assert not blocked.intersection(sys.modules)
+for module in (
+    "pipersynth.audio_job",
+    "pipersynth.composition",
+    "pipersynth.pipeline",
+    "pipersynth.plan_adapter",
+    "pipersynth.planning",
+    "pipersynth.preparation",
+):
+    assert importlib.util.find_spec(module) is None
+assert not hasattr(pipersynth, "PiperPipeline")
+"""
     result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import sys; import pipersynth; assert 'onnxruntime' not in sys.modules",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
+        [sys.executable, "-c", command], check=False, capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
-
-
-def test_package_uses_utterplan_identity() -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import importlib.util, pipersynth, utterplan; "
-                "assert importlib.util.find_spec('ttsplan') is None; "
-                "assert pipersynth.UtterancePlan is utterplan.UtterancePlan; "
-                "assert pipersynth.UtterancePlanner is utterplan.UtterancePlanner; "
-                "assert not hasattr(pipersynth, 'TTS' + 'Plan'); "
-                "assert not hasattr(pipersynth, 'TTS' + 'Planner')"
-            ),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
-
-
-def test_no_piper_runtime_imports_in_project_sources() -> None:
-    for path in ("pipersynth", "tests"):
-        output = subprocess.run(
-            ["grep", "-RE", r"(from|import)[[:space:]]+piper([[:space:]]|$)", path],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        assert output.returncode == 1, output.stdout

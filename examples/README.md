@@ -1,60 +1,41 @@
 # PiperSynth examples
 
-The maintained examples use catalog voices and the UtterPlan workflow:
+These examples demonstrate the PiperVoice synthesis-engine API. Text passed to PiperSynth must already be speakable. The examples do not parse documents or perform written-to-spoken semantic preparation.
 
-1. Resolve a voice with `PiperPipeline.from_pretrained(...)`.
-2. Build an explicit plan with `pipeline.plan(...)`.
-3. Save the `*.utterplan.json` artifact.
-4. Render that existing plan and save a WAV file.
-5. Optionally convert the plan to an `AudioJob` and replay it through AudioCompose.
+Catalog examples use OnnxVoice-managed voices. The first run may download model assets; later runs reuse the cache. Output WAV files are written below `example-artefacts/` or the directory set by `PIPERSYNTH_EXAMPLE_OUTPUT_DIR`.
 
-No example requires a manually downloaded `.onnx` file. Voice bundles are resolved
-and cached by PiperSynth. Generated plans and WAV files are written below
-`example-artefacts/`, or below the directory named by
-`PIPERSYNTH_EXAMPLE_OUTPUT_DIR`.
-
-## Commands
+## Run examples
 
 ```bash
-# Run one example.
 python examples/basic.py
-
-# Run maintained examples in isolated output directories.
+python examples/run_all.py --list
 python examples/run_all.py
-
-# Include optional examples, which may download another voice.
-python examples/run_all.py --include-optional
-
-# Use cached voices only after an online run.
-PIPERSYNTH_OFFLINE=1 python examples/run_all.py
-
-# Override the normal English catalog voice.
-PIPERSYNTH_EXAMPLE_VOICE=en_US-lessac-high python examples/basic.py
 ```
 
-## All Piper voices and languages
+Set `PIPERSYNTH_OFFLINE=1` to use cached assets only. Set `PIPERSYNTH_EXAMPLE_VOICE` to select another English catalog voice. `german.py` and `homographs.py` are optional examples and can be included with `--include-optional`.
 
-Print the current Piper catalog without downloading voice models:
+## List catalog voices
 
 ```bash
-python examples/all_voices.py --list-only
+python examples/all_voices.py --language en
 ```
 
-The command prints every catalog voice, the expanded speaker-identity count, exact Piper locale codes, and current Spokenform coverage. It writes `all_voices_inventory.json`, `all_languages.json`, `spokenform_missing_languages.json`, and the one-locale-per-line `spokenform_missing_languages.txt` handoff below `example-artefacts/`.
-
-A catalog voice is a model entry. A speaker identity is one numeric speaker within that model, so one multi-speaker catalog voice can produce many calibration identities. The full showcase is resource-heavy and is not run by default. Select it explicitly with:
+This writes an inventory JSON file and does not download a voice. To synthesize one prepared sample, provide `--voice`:
 
 ```bash
-python examples/run_all.py --include-resource-heavy
-python examples/all_voices.py
+python examples/all_voices.py \
+  --voice en_US-lessac-medium \
+  --text "This text is already prepared for speech."
 ```
 
-Use `--skip-unsupported` only for a clearly marked partial showcase. The all-voices output groups WAV files by each model's native sample rate rather than silently resampling them.
+For a multi-speaker model, pass a numeric ID or an actual model speaker name with `--speaker`. These are Piper model speakers, not document roles.
 
-## Loudness benchmark preflight
+## Included examples
 
-The loudness benchmark resolves every distinct Piper locale and count stimulus during a parent-process preflight before synthesis. Each renderable Piper model then runs in one fresh Python process, where one pipeline measures all speakers and repeats for that model. This prevents process-global PiperG2P and eSpeak state from leaking between models. Stimulus support and renderer support are reported separately, so Spokenform support does not imply PiperG2P support. Use `python benchmarks/voice_loudness.py --list-stimuli` to inspect the stimulus preflight without inference.
-
-Direct phoneme mode is intentionally excluded from this suite because
-`is_phonemes=True` bypasses UtterPlan. The library convenience APIs remain supported;
-the examples use explicit planning to make the semantic boundary visible.
+- `basic.py` synthesizes prepared English text.
+- `download_and_synthesize.py` reports asset download progress.
+- `german.py` uses a German Piper voice and explicit language.
+- `homographs.py` forwards a source-aligned pronunciation override.
+- `punctuation.py` shows PiperG2P processing prepared punctuation.
+- `stream.py` writes request-local sentence-group chunks incrementally.
+- `all_voices.py` lists catalog metadata and optionally synthesizes one voice.

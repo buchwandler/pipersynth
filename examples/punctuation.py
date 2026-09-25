@@ -1,35 +1,24 @@
-"""Exercise punctuation handling through the semantic planner."""
+#!/usr/bin/env python3
+"""Show PiperG2P rendering punctuation in already-prepared text."""
 
 from __future__ import annotations
 
 import os
 
-from _output import artefact_path
+from pipersynth import PiperVoice
 
-from pipersynth import PiperPipeline
+try:
+    from examples._output import artefact_path
+except ModuleNotFoundError:
+    from _output import artefact_path
 
 VOICE = os.environ.get("PIPERSYNTH_EXAMPLE_VOICE", "en_US-lessac-medium")
-TEXT = (
-    '"Well," said the professor, "this is unusual!"\n\n'
-    "The experiment, which took years, produced three results: "
-    "95%, 87%, and 72%.\n\n"
-    '"But wait..." she asked, "are you sure?"'
-)
+TEXT = "A short sentence, a question? And an exclamation!"
 
 
-with PiperPipeline.from_pretrained(
-    VOICE,
-    document_format="plain",
-    text_preparation="spokenform",
-) as pipeline:
-    plan = pipeline.plan(TEXT, unit="sentence")
-    plan.save(artefact_path("punctuation.utterplan.json"))
+with PiperVoice.from_pretrained(VOICE) as voice:
+    result = voice.synthesize_text(TEXT, language="en-us")
 
-    for segment in plan.segments:
-        print(
-            f"segment={segment.id} text={segment.text!r} "
-            f"before={segment.pause_before.seconds:.3f}s "
-            f"after={segment.pause_after.seconds:.3f}s"
-        )
-
-    pipeline.render_plan(plan).save_wav(artefact_path("punctuation.wav"))
+wav_path = artefact_path("punctuation.wav")
+result.save_wav(wav_path)
+print(f"WAV path: {wav_path}")

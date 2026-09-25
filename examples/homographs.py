@@ -1,28 +1,29 @@
-"""Optional homograph stress test for the English Piper voice."""
+#!/usr/bin/env python3
+"""Supply a source-aligned pronunciation override for a prepared-text homograph."""
 
 from __future__ import annotations
 
 import os
 
-from _output import artefact_path
+from pipersynth import PiperVoice, PronunciationOverride, SynthesisSegment
 
-from pipersynth import PiperPipeline
+try:
+    from examples._output import artefact_path
+except ModuleNotFoundError:
+    from _output import artefact_path
 
 VOICE = os.environ.get("PIPERSYNTH_EXAMPLE_VOICE", "en_US-lessac-medium")
-TEXT = (
-    "Please record the new record. "
-    "Do not desert us in the desert. "
-    "Wind the rope while the wind is calm. "
-    "I will read the report that I read yesterday."
+TEXT = "I read the book yesterday."
+
+segment = SynthesisSegment(
+    id="read-past-tense",
+    text=TEXT,
+    language="en-us",
+    pronunciation_overrides=(PronunciationOverride(2, 6, phonemes="ɹɛd"),),
 )
+with PiperVoice.from_pretrained(VOICE) as voice:
+    result = voice.synthesize(segment)
 
-
-with PiperPipeline.from_pretrained(
-    VOICE,
-    document_format="plain",
-    text_preparation="spokenform",
-) as pipeline:
-    plan = pipeline.plan(TEXT, unit="sentence")
-    plan.save(artefact_path("homographs.utterplan.json"))
-    pipeline.render_plan(plan).save_wav(artefact_path("homographs.wav"))
-    print(f"Rendered homographs plan: {plan.plan_id}")
+wav_path = artefact_path("homographs.wav")
+result.save_wav(wav_path)
+print(f"WAV path: {wav_path}")

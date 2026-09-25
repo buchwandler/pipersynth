@@ -1,0 +1,7 @@
+prune .ledger
+prune .taskledger
+prune build
+prune dist
+prune example-artefacts
+global-exclude __pycache__
+global-exclude *.py[cod]

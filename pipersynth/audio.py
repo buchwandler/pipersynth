@@ -21,7 +21,7 @@ def _as_float32_1d(audio: np.ndarray, *, name: str = "audio") -> np.ndarray:
 
 
 def prepare_audio(audio: np.ndarray, *, normalize: bool) -> np.ndarray:
-    """Validate inference audio and apply the legacy peak normalization step."""
+    """Validate inference audio and optionally normalize its peak."""
     result = _as_float32_1d(audio)
     if normalize and result.size:
         peak = float(np.max(np.abs(result)))
@@ -32,27 +32,21 @@ def prepare_audio(audio: np.ndarray, *, normalize: bool) -> np.ndarray:
     return result
 
 
-def finish_audio(audio: np.ndarray, *, volume: float) -> np.ndarray:
-    """Apply user volume and perform the single final safety clamp."""
+def finish_audio(audio: np.ndarray, *, output_gain: float) -> np.ndarray:
+    """Apply explicit request-local output gain and the safety clamp."""
     result = _as_float32_1d(audio)
-    if isinstance(volume, bool) or not isinstance(volume, (int, float)) or not np.isfinite(volume):
-        raise ModelInferenceError("volume must be a finite number")
-    if volume != 1.0:
-        result = result * np.float32(volume)
+    if (
+        isinstance(output_gain, bool)
+        or not isinstance(output_gain, (int, float))
+        or not np.isfinite(output_gain)
+        or output_gain < 0
+    ):
+        raise ModelInferenceError("output_gain must be a finite non-negative number")
+    if output_gain != 1.0:
+        result = result * np.float32(output_gain)
     if not np.all(np.isfinite(result)):
         raise ModelInferenceError("postprocessed audio contains non-finite samples")
     return np.clip(result, -1.0, 1.0).astype(np.float32, copy=False)
-
-
-def postprocess_audio(
-    audio: np.ndarray,
-    *,
-    normalize: bool,
-    volume: float,
-) -> np.ndarray:
-    """Normalize, scale, validate, and clip a waveform without mutating it."""
-
-    return finish_audio(prepare_audio(audio, normalize=normalize), volume=volume)
 
 
 def float_to_int16(audio: np.ndarray) -> np.ndarray:
@@ -66,21 +60,6 @@ def audio_to_int16_bytes(audio: np.ndarray) -> bytes:
     return float_to_int16(audio).tobytes()
 
 
-def silence_samples(sample_rate: int, seconds: float) -> int:
-    """Return the exact rounded sample count for a silence duration."""
-
-    if isinstance(sample_rate, bool) or not isinstance(sample_rate, int) or sample_rate <= 0:
-        raise ValueError("sample_rate must be a positive integer")
-    if not np.isfinite(seconds) or seconds < 0:
-        raise ValueError("seconds must be finite and >= 0")
-    return round(sample_rate * seconds)
-
-
-def pause_audio(sample_rate: int, seconds: float) -> np.ndarray:
-    """Return float32 silence for one resolved semantic pause."""
-    return np.zeros(silence_samples(sample_rate, seconds), dtype=np.float32)
-
-
 def write_wav(
     target: str | Path | BinaryIO,
     audio: np.ndarray,
@@ -88,6 +67,8 @@ def write_wav(
 ) -> None:
     """Write mono 16-bit PCM WAV data to a path or binary file-like object."""
 
+    if isinstance(sample_rate, bool) or not isinstance(sample_rate, int) or sample_rate <= 0:
+        raise ValueError("sample_rate must be a positive integer")
     pcm = float_to_int16(audio)
     target_file = str(target) if isinstance(target, Path) else target
     with wave.open(target_file, "wb") as handle:

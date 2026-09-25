@@ -1,67 +1,36 @@
 # Architecture
 
-PiperSynth is the application-facing Piper engine. Its dependencies have distinct ownership:
+PiperSynth is a Piper synthesis engine. It accepts one prepared speech request, uses PiperG2P to produce Piper sentence groups and phoneme IDs, calls OnnxVoice for model inference, applies engine-local audio processing, and returns one independent `RenderedSegment`.
 
-1. `UtterPlan` owns document parsing, SSMD, written-to-spoken preparation, language runs, semantic directives, pause resolution, markers, and render units.
-2. `piperg2p` owns Piper voice JSON parsing, frontend dispatch, phonemization, raw phoneme blocks, lexicons, and voice-specific ID encoding.
-3. `OnnxVoice` owns Piper model catalogs, installation caches, artifact verification, provider selection, ONNX Runtime sessions, Piper graph tensors, and raw native-rate inference results.
-4. `AudioCompose` owns generic audio sources, explicit silence, timeline composition, resampling, anchors, final clipping, and AudioJob persistence.
-5. PiperSynth owns application policy: speaker names and defaults, synthesis controls, UtterPlan adaptation, compatibility postprocessing, result metadata, diagnostics, and the public `PiperPipeline` and `PiperVoice` APIs.
+## Ownership
 
-The normal batch chain is:
+| Responsibility                                                                             | Owner                         |
+| ------------------------------------------------------------------------------------------ | ----------------------------- |
+| Document parsing, SSMD, written-to-spoken preparation, logical voice roles                 | Application or document layer |
+| Piper frontend, phonemization, sentence groups, Piper IDs                                  | PiperG2P                      |
+| Voice catalogs, asset installation, provider selection, ONNX sessions, inference           | OnnxVoice                     |
+| Piper speaker resolution, acoustic scales, request-local joining, static voice calibration | PiperSynth                    |
+| Timeline pauses, markers, resampling, mixing, final mastering                              | Caller or AudioCompose        |
 
-```text
-source text
-  -> UtterPlan
-  -> PiperSynth plan adapter
-  -> piperg2p phonemes and Piper IDs
-  -> OnnxVoice PiperAdapter
-  -> raw float32 model audio
-  -> PiperSynth compatibility interpretation
-  -> AudioJob
-  -> AudioCompose Composer
-  -> PiperSynth AudioResult
-```
+PiperSynth has no runtime dependency on Utterplan, SSMD, or AudioCompose. Those systems may construct `SynthesisSegment` requests and compose returned audio outside this package.
 
-`AudioCompose` receives only generic `AudioClip`, `Silence`, and `AudioJob` values. Piper-specific details remain opaque JSON-safe metadata. It does not import PiperSynth, OnnxVoice, piperg2p, or UtterPlan, and it does not branch on producer names.
+## Request lifecycle
 
-## Runtime and asset lifecycle
+1. The caller prepares speakable text and creates a `SynthesisSegment` or calls `synthesize_text()`.
+2. PiperSynth validates the active model language and resolves a speaker name or ID within that model.
+3. PiperSynth converts source-aligned pronunciation overrides and token annotations to PiperG2P types. It preserves offsets and fields such as `morph`.
+4. PiperG2P returns ordered sentence groups. PiperSynth infers every nonempty ID group separately.
+5. PiperSynth validates each native-rate waveform, applies normalization, static voice calibration, and explicit `output_gain`, then joins the chunks directly without inserted silence.
+6. The request returns one `RenderedSegment`. Runtime timing and output-tensor summaries remain diagnostics, not word alignment.
 
-`PiperVoice.load()` validates local model and config paths, parses `VoiceConfig`, creates `PiperFrontend`, and opens the local model through `onnxvoice.open_local(system="piper", ...)`. `PiperVoice.from_pretrained()` and `PiperPipeline.from_pretrained()` normalize unqualified IDs to `piper:<id>`, install through `onnxvoice.OnnxVoice`, and open the resulting installation. PiperSynth asset classes are compatibility views over those installations, not independent catalogs or caches.
+Each request has independent audio. PiperSynth does not create a global timeline, markers, document pauses, or fabricated word timings.
 
-OnnxVoice returns raw model audio. PiperSynth resolves speaker IDs and scalar synthesis controls before calling `infer()`, validates the model sample rate against `VoiceConfig`, and keeps the existing normalize and volume compatibility step. Raw inference result objects and NumPy auxiliary tensors never enter an AudioJob.
+## Voice lifecycle
 
-## AudioJob and composition
+`PiperVoice.from_pretrained()` installs or reuses an OnnxVoice-managed Piper voice. `PiperVoice.from_local()` opens a local model through OnnxVoice and uses the adjacent `<model>.json` config unless another config path is supplied. Context-manager exit closes the runtime and any frontend created by PiperSynth.
 
-`PiperPipeline.to_audio_job(plan, **render_overrides)` is producer-only. It creates one `AudioClip` per rendered segment using the segment ID, explicit positive `Silence` items for resolved pauses, stable boundary anchors, JSON-safe provenance, and an explicit compatibility output policy. It does not call `Composer`.
+A `PiperVoice` remains bound to one Piper model. A different model requires another voice instance. A different speaker within a multi-speaker model is selected on `SynthesisSegment.speaker` or `synthesize_text(speaker=...)`.
 
-`render_plan()` uses the same private render context, calls `Composer.compose()` exactly once, and takes the final waveform and sample rate from `CompositionResult`. It rebuilds PiperSynth markers, warnings, diagnostics, and optional retained unit chunks from the composition context. Streaming APIs remain a separate specialized path because complete-document composition and streaming have different lifetime and loudness semantics.
+## Audio policy
 
-## Lifecycle
-
-Use `with PiperVoice.load(...)` and `with PiperPipeline(...)` where possible. `close()` is idempotent and closes prepared plans, the planner, and owned OnnxVoice runtimes. Injected voice factories and planners remain caller-managed dependencies.
-
-The package is clean-room independent from Piper's GPL runtime. Compatibility is expressed through the external model protocol, voice configuration, and public behavior, not copied implementation code.
-
-## Offline voice loudness calibration
-
-Voice leveling is an offline catalog-data flow, not a synthesis-time measurement:
-
-```text
-complete OnnxVoice Piper catalog
-  -> expand every numeric speaker
-  -> count 1..10 stimulus per locale
-  -> three repeats with leveling off and normalize_audio=True
-  -> audiosig BS.1770 integrated LUFS and true peak
-  -> median/MAD and headroom-safe gain
-  -> reviewable schema-2 report
-  -> strict promotion to runtime schema 1
-```
-
-Managed pipelines retain the `VoiceBundle.installation`, so runtime lookup uses the canonical installation ID, metadata quality, and resolved numeric speaker. Local path loads intentionally have no catalog identity. The exact key is `piper:model-id:quality:speaker-N`; aliases and display names are never used as calibration identities.
-
-Runtime processing is `raw inference -> optional legacy peak normalization -> static catalog or override gain -> user/segment volume -> finite validation -> one final clamp`. The static gain is cheap and deterministic. Missing identity or missing record produces a zero-gain diagnostic rather than a fuzzy substitution.
-
-`target_lufs` is a separate complete-output `AudioCompose` policy. It is valid for composed batch output and rejected by true streaming APIs because normalizing each streamed unit would not normalize the finished document. The benchmark uses `voice_leveling="off"`, `target_lufs=None`, `normalize_audio=True`, and volume `1.0` so its measurements match the shipped processing baseline.
-
-The benchmark enumerates the complete current `VoiceAssetManager.list_voices(refresh=True)` inventory and expands `range(max(1, num_speakers))`. Filtered or offline runs are development evidence only and cannot pass the full-coverage promotion gate. Production promotion validates provenance, policy, repeat count, finite values, MAD, exact identities, and coverage, recomputes true-peak-safe gains, strips benchmark-only fields, and refuses the packaged output path.
+In-memory audio is mono finite `float32` at the Piper model's sample rate. WAV output uses mono signed 16-bit PCM. Piper acoustic controls are explicit `SynthesisConfig` fields. `output_gain` and static voice-level calibration are engine-local controls. Complete-output loudness and true-peak mastering are not part of PiperSynth.

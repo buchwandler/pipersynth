@@ -1,24 +1,26 @@
+from __future__ import annotations
+
 import json
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from piperg2p import PiperFrontend, VoiceConfig
+from piperg2p import VoiceConfig
 
 from pipersynth import (
-    LoudnessConfig,
     PiperVoice,
     SynthesisConfig,
     VoiceCalibrationCatalog,
     VoiceCalibrationKey,
     VoiceLevelCalibration,
+    VoiceLevelConfig,
     apply_voice_level_calibration,
     load_voice_calibration,
 )
 from pipersynth.voice_level import CalibrationDataError
 
 
-def _config(num_speakers=1):
+def voice_config(num_speakers: int = 1) -> VoiceConfig:
     return VoiceConfig.from_dict(
         {
             "num_symbols": 4,
@@ -26,12 +28,13 @@ def _config(num_speakers=1):
             "audio": {"sample_rate": 22050},
             "phoneme_type": "text",
             "phoneme_id_map": {"_": [0], "a": [1], "b": [2], " ": [3]},
+            "speaker_id_map": {"alice": 1} if num_speakers > 1 else {},
             "default_speaker_id": 1 if num_speakers > 1 else 0,
         }
     )
 
 
-def test_exact_catalog_gain_and_override_precedence():
+def test_catalog_gain_and_explicit_override_precedence() -> None:
     key = VoiceCalibrationKey("piper", "voice", "medium", "speaker-0")
     catalog = VoiceCalibrationCatalog(
         1,
@@ -43,51 +46,62 @@ def test_exact_catalog_gain_and_override_precedence():
     )
     audio = np.array([1.0], dtype=np.float32)
     leveled, application = apply_voice_level_calibration(
-        audio, LoudnessConfig(voice_leveling="calibrated"), key, catalog=catalog
+        audio, VoiceLevelConfig(mode="calibrated"), key, catalog=catalog
     )
     assert application.source == "catalog"
-    assert np.isclose(leveled[0], 10 ** (-6 / 20), rtol=1e-5)
+    np.testing.assert_allclose(leveled, [10 ** (-6 / 20)], rtol=1e-5)
     overridden, application = apply_voice_level_calibration(
         audio,
-        LoudnessConfig(voice_leveling="calibrated", voice_gain_db=-12.0),
+        VoiceLevelConfig(mode="calibrated", gain_db=-12.0),
         key,
         catalog=catalog,
     )
     assert application.source == "override"
-    assert np.isclose(overridden[0], 10 ** (-12 / 20), rtol=1e-5)
+    np.testing.assert_allclose(overridden, [10 ** (-12 / 20)], rtol=1e-5)
 
 
-def test_local_voice_has_no_catalog_identity_and_explicit_gain_still_works():
-    runtime = SimpleNamespace(infer=lambda *args, **kwargs: None)
-    voice = PiperVoice(runtime, _config(), PiperFrontend(_config()))
-    assert voice.calibration_key(SynthesisConfig()) is None
-    audio, application = apply_voice_level_calibration(
-        np.array([1.0], dtype=np.float32),
-        LoudnessConfig(voice_leveling="calibrated"),
-        None,
+def test_piper_voice_applies_explicit_engine_gain_and_output_gain() -> None:
+    class Runtime:
+        def infer(self, ids, **kwargs):
+            return SimpleNamespace(
+                audio=np.array([[[0.2, -0.4]]], dtype=np.float32), sample_rate=22050
+            )
+
+    config = voice_config()
+    voice = PiperVoice(Runtime(), config, frontend=object())  # type: ignore[arg-type]
+    audio = voice.synthesize_ids(
+        [1],
+        config=SynthesisConfig(
+            normalize_audio=False,
+            output_gain=0.5,
+            voice_level=VoiceLevelConfig(mode="calibrated", gain_db=-6.0),
+        ),
     )
-    assert application.source == "missing_identity"
-    assert np.array_equal(audio, [1.0])
+    np.testing.assert_allclose(audio, np.array([0.2, -0.4]) * 0.5 * 10 ** (-6 / 20))
+    assert voice.last_voice_level_application is not None
+    assert voice.last_voice_level_application.source == "override"
 
 
-def test_managed_key_uses_numeric_speaker_and_quality():
-    config = _config(3)
+def test_managed_calibration_key_uses_resolved_speaker_name() -> None:
+    config = voice_config(2)
     installation = SimpleNamespace(id="voice", metadata={"quality": "medium"})
-    runtime = SimpleNamespace(infer=lambda *args, **kwargs: None)
-    voice = PiperVoice(runtime, config, PiperFrontend(config), installation=installation)
-    assert voice.calibration_key(SynthesisConfig(speaker_id=1)) == VoiceCalibrationKey(
-        "piper", "voice", "medium", "speaker-1"
+    voice = PiperVoice(
+        SimpleNamespace(infer=lambda *args, **kwargs: None),
+        config,
+        frontend=object(),  # type: ignore[arg-type]
+        installation=installation,
     )
-    assert voice.calibration_key(SynthesisConfig()) == VoiceCalibrationKey(
+    assert voice.calibration_key("alice") == VoiceCalibrationKey(
         "piper", "voice", "medium", "speaker-1"
     )
 
 
-def test_loader_rejects_duplicate_keys_unknown_fields_and_nonfinite(tmp_path):
+def test_loader_rejects_duplicate_keys_unknown_fields_and_nonfinite(tmp_path) -> None:
     duplicate = tmp_path / "duplicate.json"
     duplicate.write_text('{"schema": 1, "schema": 1}')
     with pytest.raises(CalibrationDataError):
         load_voice_calibration(duplicate)
+
     base = {
         "schema": 1,
         "method": "bs1770",
@@ -102,35 +116,8 @@ def test_loader_rejects_duplicate_keys_unknown_fields_and_nonfinite(tmp_path):
     unknown.write_text(json.dumps(payload))
     with pytest.raises(CalibrationDataError):
         load_voice_calibration(unknown)
+
     nonfinite = tmp_path / "nonfinite.json"
     nonfinite.write_text(json.dumps({**base, "reference_lufs": float("nan")}))
     with pytest.raises(CalibrationDataError):
         load_voice_calibration(nonfinite)
-
-
-def test_processing_order_normalize_then_gain_then_volume():
-    class Runtime:
-        def infer(self, ids, **kwargs):
-            return SimpleNamespace(
-                audio=np.array([[[2.0, -1.0]]], dtype=np.float32), sample_rate=22050
-            )
-
-        def close(self):
-            pass
-
-    config = _config()
-    voice = PiperVoice(Runtime(), config, PiperFrontend(config))
-    audio = voice.synthesize_ids(
-        [1],
-        SynthesisConfig(
-            volume=0.5,
-            loudness=LoudnessConfig(voice_gain_db=-6.0),
-        ),
-    )
-    assert np.allclose(audio, [10 ** (-6 / 20) * 0.5, -0.5 * 10 ** (-6 / 20) * 0.5])
-
-
-def test_packaged_catalog_data_is_present():
-    from importlib.resources import files
-
-    assert files("pipersynth").joinpath("data", "voice_level_calibration.json").is_file()

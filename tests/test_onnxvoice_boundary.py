@@ -129,25 +129,10 @@ def test_piper_ref_rejects_other_systems():
         boundary.normalize_piper_ref("kokoro:model")
 
 
-def test_piper_sources_do_not_own_onnxruntime_or_catalog_downloader():
-    source = "\n".join(path.read_text(encoding="utf-8") for path in Path("pipersynth").glob("*.py"))
-    assert "import onnxruntime" not in source
-    assert "from onnxruntime" not in source
-    assert "piper_voice_catalog" not in source
-
-
-def test_lower_level_packages_do_not_depend_on_pipersynth_or_each_other():
-    import audiocompose
+def test_lower_level_packages_do_not_depend_on_pipersynth() -> None:
     import onnxvoice
 
-    for package in (onnxvoice, audiocompose):
-        root = Path(package.__file__).parent
-        source = "\n".join(path.read_text(encoding="utf-8") for path in root.rglob("*.py"))
-        assert "pipersynth" not in source
-    compose_source = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in (Path(audiocompose.__file__).parent).rglob("*.py")
+    source = "\n".join(
+        path.read_text(encoding="utf-8") for path in Path(onnxvoice.__file__).parent.rglob("*.py")
     )
-    assert "onnxvoice" not in compose_source
-    assert "piperg2p" not in compose_source
-    assert "utterplan" not in compose_source
+    assert "pipersynth" not in source

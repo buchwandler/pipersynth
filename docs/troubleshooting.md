@@ -1,25 +1,33 @@
 # Troubleshooting
 
-## OnnxVoice or ONNX Runtime is missing
+## Missing ONNX Runtime
 
-Install `pipersynth[cpu]` or `pipersynth[gpu]`. Importing `pipersynth` itself does not require ONNX Runtime. PiperSynth delegates runtime dependency errors to its own `OptionalDependencyError` with the relevant extra.
+Install one runtime extra:
 
-## Managed voice or catalog errors
+```bash
+pip install "pipersynth[cpu]"
+# or
+pip install "pipersynth[gpu]"
+```
 
-Managed voice references are normalized to `piper:<voice-id>` and resolved by OnnxVoice. Use `offline=True` only when the catalog and installation are already cached. Catalog, integrity, and lock failures are translated to PiperSynth asset errors while preserving the original exception as the cause.
+Catalog and model asset access are provided by OnnxVoice. Use `offline=True` or `PIPERSYNTH_OFFLINE=1` when only cached assets should be used.
 
-## Model contract errors
+## Language does not match the active model
 
-A Piper-compatible model exposes `input`, `input_lengths`, and `scales`. Multi-speaker models also expose `sid`. The matching `.onnx.json` file must exist beside the model unless `config_path` is supplied. OnnxVoice owns tensor construction and reports contract errors through PiperSynth model errors.
+A `PiperVoice` is bound to one model. Pass a language compatible with that model's PiperG2P profile. PiperSynth does not switch acoustic models based on request text. For a different model, open a different `PiperVoice`.
 
-## Invalid speaker errors
+## Unknown or invalid speaker
 
-Single-speaker voices accept no explicit speaker or ID `0`. Multi-speaker IDs must be in range, and names must exist in `speaker_id_map`. No speaker is silently changed.
+Speaker names and numeric IDs must belong to the active Piper model. `None` selects the configured default for a multi-speaker voice. A document role such as `guest` is not a Piper speaker unless that exact name exists in the model's speaker map.
 
-## Non-finite or unexpected audio
+## Pronunciation override or annotation offsets fail
 
-Model output must be a finite singleton-wrapped waveform at the native sample rate declared by the Piper config. Ambiguous multi-channel or multi-batch output is rejected. PCM conversion clips only finite normalized values and never writes NaN or infinity.
+Offsets use Python half-open ranges into the exact prepared string stored in `SynthesisSegment.text`. Do not reuse offsets from an unprepared source document. If `LinguisticToken.text` is supplied, it must equal the source slice.
 
-## Text preparation
+## Text is pronounced differently than expected
 
-Identity mode is the default. `spokenform` requires an explicit language. It is optional and runs before `piperg2p`; raw `[[...]]` phoneme blocks are protected.
+PiperSynth accepts prepared, speakable text. It does not expand numbers, dates, abbreviations, SSMD, or written-to-spoken semantics. Perform that preparation in the caller, then pass the resulting text and any source-aligned pronunciation context.
+
+## WAV output
+
+Rendered audio is mono finite `float32` at the active model's sample rate. `RenderedSegment.save_wav()` writes mono 16-bit PCM. Use `output_gain` only for explicit engine-local gain. Final loudness, peak, and timeline policies belong to the caller.

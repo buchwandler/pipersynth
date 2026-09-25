@@ -11,7 +11,7 @@ from typing import Any, Literal
 import audiosig
 import numpy as np
 
-from .loudness_config import LoudnessConfig
+from .errors import InvalidSynthesisConfigError
 
 _SUPPORTED_SCHEMA = 1
 _SUPPORTED_METHOD = "bs1770"
@@ -25,6 +25,26 @@ _RECORD_FIELDS = {
     "corpus_version",
 }
 _TOP_FIELDS = {"schema", "method", "corpus", "reference_lufs", "generated_with", "voices"}
+
+
+VoiceLevelMode = Literal["off", "calibrated"]
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceLevelConfig:
+    """Static model or speaker gain calibration for the synthesis engine."""
+
+    mode: VoiceLevelMode = "off"
+    gain_db: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"off", "calibrated"}:
+            raise InvalidSynthesisConfigError("mode must be 'off' or 'calibrated'")
+        if self.gain_db is not None:
+            if isinstance(self.gain_db, bool) or not isinstance(self.gain_db, (int, float)):
+                raise InvalidSynthesisConfigError("gain_db must be a finite number or None")
+            if not np.isfinite(self.gain_db):
+                raise InvalidSynthesisConfigError("gain_db must be finite")
 
 
 class CalibrationDataError(ValueError):
@@ -200,7 +220,7 @@ def default_voice_calibration() -> VoiceCalibrationCatalog:
 
 def apply_voice_level_calibration(
     audio: np.ndarray,
-    config: LoudnessConfig,
+    config: VoiceLevelConfig,
     key: VoiceCalibrationKey | None,
     *,
     catalog: VoiceCalibrationCatalog | None = None,
@@ -208,10 +228,10 @@ def apply_voice_level_calibration(
     """Apply one deterministic static gain; never measure the waveform."""
 
     result = np.asarray(audio, dtype=np.float32)
-    if config.voice_gain_db is not None:
-        gain = float(config.voice_gain_db)
+    if config.gain_db is not None:
+        gain = float(config.gain_db)
         source: VoiceLevelSource = "override"
-    elif config.voice_leveling != "calibrated":
+    elif config.mode != "calibrated":
         gain = 0.0
         source = "off"
     elif key is None:
@@ -234,6 +254,8 @@ def apply_voice_level_calibration(
 
 __all__ = [
     "CalibrationDataError",
+    "VoiceLevelConfig",
+    "VoiceLevelMode",
     "VoiceCalibrationCatalog",
     "VoiceCalibrationKey",
     "VoiceLevelApplication",

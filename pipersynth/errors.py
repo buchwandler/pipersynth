@@ -25,26 +25,6 @@ class SessionCreationError(ModelLoadError):
     """The inference session could not be created."""
 
 
-class PlanRenderingError(PiperSynthError):
-    """An UtterancePlan could not be rendered by the active Piper voice."""
-
-
-class UnsupportedPlanLanguageError(PlanRenderingError):
-    """A plan segment language is unsupported by the active Piper voice."""
-
-
-class UnsupportedPlanDirectiveError(PlanRenderingError):
-    """A plan directive is unsupported by PiperSynth."""
-
-
-class VoiceBindingError(PlanRenderingError):
-    """A logical plan voice cannot be bound to the active Piper voice."""
-
-
-class PlanSampleRateMismatchError(PlanRenderingError):
-    """Rendered voices do not share the output sample rate."""
-
-
 class SynthesisError(PiperSynthError):
     """Speech synthesis failed."""
 
@@ -63,10 +43,6 @@ class ModelInferenceError(SynthesisError):
 
 class VoiceClosedError(SynthesisError, RuntimeError):
     """An operation was attempted after a voice was closed."""
-
-
-class TextPreparationError(PiperSynthError):
-    """Text preparation failed."""
 
 
 class OptionalDependencyError(PiperSynthError, ImportError):
