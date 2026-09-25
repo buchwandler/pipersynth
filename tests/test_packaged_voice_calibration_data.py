@@ -31,6 +31,14 @@ def test_packaged_catalog_has_complete_measured_data() -> None:
     assert len(catalog.revision) == 64
     assert catalog.method == "bs1770"
     assert catalog.corpus == "pipersynth-count-1-to-10-v1"
+    assert catalog.generated_with == {
+        "audiosig": "0.1.4",
+        "onnxvoice": "0.1.9",
+        "piperg2p": "0.1.5",
+        "pipersynth": "0.1.3.dev1+ge4f1c6860",
+        "spokenform": "0.4.5",
+        "utterplan": "0.1.3",
+    }
     assert catalog.reference_lufs == -24.0
     assert len(catalog.voices) == 2704
     assert [str(key) for key in catalog.voices] == sorted(str(key) for key in catalog.voices)

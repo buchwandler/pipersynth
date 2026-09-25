@@ -13,7 +13,6 @@ authors = [{name = "PiperSynth contributors"}]
 dependencies = [
   "numpy>=1.23",
   "piperg2p>=0.1.7,<0.2",
-  "phrasplit>=0.3.6,<0.4",
   "onnxvoice>=0.1.10,<0.2",
   "audiosig>=0.1.4,<0.2",
  ]
@@ -32,10 +31,15 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
+[project.urls]
+Homepage = "https://github.com/buchwandler/pipersynth"
+Repository = "https://github.com/buchwandler/pipersynth"
+Issues = "https://github.com/buchwandler/pipersynth/issues"
+
 [project.optional-dependencies]
-cpu = ["onnxvoice[cpu]>=0.1,<0.2"]
-gpu = ["onnxvoice[gpu]>=0.1,<0.2"]
-catalog = ["onnxvoice>=0.1,<0.2"]
+cpu = ["onnxvoice[cpu]>=0.1.10,<0.2"]
+gpu = ["onnxvoice[gpu]>=0.1.10,<0.2"]
+catalog = ["onnxvoice>=0.1.10,<0.2"]
 playback = ["sounddevice>=0.5,<0.6"]
 dev = [
   "pytest>=8",
@@ -64,7 +68,7 @@ pipersynth = ["py.typed", "data/*.json"]
 
 [tool.setuptools_scm]
 write_to = "pipersynth/_version.py"
-fallback_version = "0.1.1"
+fallback_version = "0.0.0+unknown"
 
 [tool.coverage.run]
 omit = ["pipersynth/_version.py"]

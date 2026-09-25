@@ -1,0 +1,98 @@
+rows:
+  - sha: 2731e013a09cdc785c045e4f70c03d511f50428f
+    inspected: true
+    inspected_paths:
+      - README.md
+      - docs/architecture.md
+      - docs/performance.md
+      - pyproject.toml
+      - pipersynth/__init__.py
+      - pipersynth/types.py
+      - pipersynth/voice.py
+      - pipersynth/voice_level.py
+      - tests/test_engine_public_api.py
+      - tests/test_engine_voice.py
+    observed_behavior: >-
+      Removes the document pipeline, planning, preparation, composition, and former
+      result APIs and runtime dependencies. The replacement PiperVoice surface
+      accepts prepared speakable text and leaves document-level responsibilities
+      to callers and downstream audio layers. Voice-level calibration is static
+      and opt-in.
+    public_impact: public
+    decision: accepted
+    target_entry_key: null
+    target_entry_id: null
+    notes: >-
+      Coverage owner for the 0.2.0 migration entry; public callers must move
+      preparation, planning, and composition out of PiperSynth.
+    stale: false
+  - sha: 09242788b1ceb8a8b299f1f4f8e9e52233e120ae
+    inspected: true
+    inspected_paths:
+      - pyproject.toml
+    observed_behavior: >-
+      Temporarily lowered the PiperG2P minimum from 0.1.7 to 0.1.6. The later
+      7a6acb0 commit restores the final range floor to 0.1.7, so this has no net
+      dependency-floor effect in the release candidate.
+    public_impact: none
+    decision: internal
+    target_entry_key: null
+    target_entry_id: null
+    notes: >-
+      Superseded packaging adjustment with no user-visible effect in the final
+      release tree; no public changelog entry is warranted.
+    stale: false
+  - sha: 7a6acb03a1a505cda494966e3a98e3448bb7695e
+    inspected: true
+    inspected_paths:
+      - README.md
+      - docs/architecture.md
+      - docs/performance.md
+      - examples/long_text.py
+      - pipersynth/types.py
+      - pipersynth/voice.py
+      - pyproject.toml
+      - tests/test_engine_public_api.py
+      - tests/test_engine_voice.py
+    observed_behavior: >-
+      Adds request-local Phrasplit text splitting and the corresponding dependency,
+      but the subsequent a138121 commit replaces that behavior with atomic
+      synthesis requests and caller-owned boundaries. The final engine API does
+      not import or call Phrasplit; the candidate metadata cleanup is recorded in
+      the implementation task.
+    public_impact: public
+    decision: accepted
+    target_entry_key: null
+    target_entry_id: null
+    notes: >-
+      Grouped with the later atomic-request behavior so the entry describes the
+      net public contract, not a superseded intermediate splitting feature.
+    stale: false
+  - sha: a13812149614374affaf1867ef221b8b0c2704aa
+    inspected: true
+    inspected_paths:
+      - README.md
+      - docs/architecture.md
+      - docs/performance.md
+      - docs/troubleshooting.md
+      - pipersynth/__init__.py
+      - pipersynth/errors.py
+      - pipersynth/types.py
+      - pipersynth/voice.py
+      - tests/test_engine_public_api.py
+      - tests/test_engine_types.py
+      - tests/test_engine_voice.py
+    observed_behavior: >-
+      Replaces text-splitting and chunk-oriented synthesis with typed
+      SynthesisRequest and SynthesisResult APIs. Each request is phonemized as a
+      whole and sent through one model inference; known capacity overflow raises
+      SynthesisInputTooLongError instead of splitting or retrying. Caller owns
+      request boundaries, and token annotations including morph are forwarded.
+    public_impact: public
+    decision: accepted
+    target_entry_key: null
+    target_entry_id: null
+    notes: >-
+      Coverage owner for the atomic prepared-text request behavior and its
+      migration guidance.
+    stale: false

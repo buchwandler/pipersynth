@@ -1,0 +1,16 @@
+ pyproject.toml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/pyproject.toml b/pyproject.toml
+index 804dd97..9c8cc58 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -12,7 +12,7 @@ license = {text = "Apache-2.0"}
+ authors = [{name = "PiperSynth contributors"}]
+ dependencies = [
+   "numpy>=1.23",
+-  "piperg2p>=0.1.7,<0.2",
++  "piperg2p>=0.1.6,<0.2",
+   "onnxvoice>=0.1.10,<0.2",
+   "audiosig>=0.1.4,<0.2",
+  ]

@@ -5,5 +5,11 @@
   "reference_lufs": -24.0,
   "min_gain_db": -12.0,
   "max_gain_db": 8.0,
-  "max_mad_lu": 0.75
+  "max_mad_lu": 0.75,
+  "identity_overrides": {
+    "piper:en_US-libritts_r-medium:medium:speaker-761": {
+      "min_gain_db": -12.195012852417848,
+      "rationale": "Preserve the carried-forward measured gain for this exact identity. Keep the global -12 dB floor unchanged for all other identities, and revisit this exception when the catalog is remeasured."
+    }
+  }
 }

@@ -64,6 +64,24 @@ def build_candidate(
     failed = _non_negative_integer(coverage.get("catalog_identities_failed"), "failed")
     if min_gain_db > max_gain_db or max_mad_lu < 0:
         raise ValueError("measurement policy limits are invalid")
+    identity_overrides = policy.get("identity_overrides", {})
+    if not isinstance(identity_overrides, Mapping):
+        raise ValueError("measurement identity_overrides must be an object")
+    for identity_key, identity_override in identity_overrides.items():
+        if not isinstance(identity_key, str) or not isinstance(identity_override, Mapping):
+            raise ValueError("measurement identity overrides must map keys to objects")
+        try:
+            VoiceCalibrationKey.parse(identity_key)
+        except ValueError as error:
+            raise ValueError(
+                f"invalid measurement identity override key: {identity_key}"
+            ) from error
+        override_min_gain_db = _finite_number(
+            identity_override.get("min_gain_db"), f"{identity_key}.min_gain_db"
+        )
+        if override_min_gain_db > max_gain_db:
+            raise ValueError(f"{identity_key}.min_gain_db exceeds max_gain_db")
+        _required_string(identity_override.get("rationale"), f"{identity_key}.rationale")
     if expected <= 0 or measured > expected or failed != expected - measured:
         raise ValueError("measurement coverage counts are inconsistent")
     if not coverage.get("complete") and not allow_partial:
@@ -98,7 +116,16 @@ def build_candidate(
         mad_lu = _finite_number(aggregate.get("mad_lu"), f"{key}.mad_lu")
         gain_db = _finite_number(aggregate.get("gain_db"), f"{key}.gain_db")
         repeat_count = _non_negative_integer(aggregate.get("repeat_count"), f"{key}.repeat_count")
-        expected_gain = min(max_gain_db, max(min_gain_db, reference_lufs - median_lufs))
+        identity_override = identity_overrides.get(str(key))
+        identity_min_gain_db = (
+            float(identity_override["min_gain_db"])
+            if identity_override is not None
+            else min_gain_db
+        )
+        expected_gain = min(
+            max_gain_db,
+            max(identity_min_gain_db, reference_lufs - median_lufs),
+        )
         if not math.isclose(gain_db, expected_gain, abs_tol=1e-9):
             raise ValueError(f"{key}.gain_db does not match the declared policy")
 

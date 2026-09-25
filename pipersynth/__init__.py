@@ -5,8 +5,8 @@ from piperg2p import VoiceConfig
 try:
     from ._version import __version__, __version_tuple__
 except ImportError:
-    __version__ = "0.1.1"
-    __version_tuple__ = (0, 1, 1)
+    __version__ = "0.0.0+unknown"
+    __version_tuple__ = (0, 0, 0)
 
 from .asset_manager import CacheInfo, VoiceAssetManager, list_cached_voices, list_voices
 from .asset_progress import AssetProgressCallback, AssetProgressEvent, ConsoleAssetProgress

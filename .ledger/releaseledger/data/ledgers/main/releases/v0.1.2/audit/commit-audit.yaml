@@ -1,0 +1,77 @@
+schema_version: 1
+object_type: commit_audit_sheet
+versioning:
+  schema_version: 1
+  revision: 2
+release_version: v0.1.2
+git_base_ref: v0.1.1
+git_base_sha: 5927e15315ccbcfdc337962637a53914337398a6
+git_head_ref: HEAD
+git_head_sha: b8ec8e3ceb3e56f9604ac2c1bd67503b8304f4be
+git_range: 5927e15315ccbcfdc337962637a53914337398a6..b8ec8e3ceb3e56f9604ac2c1bd67503b8304f4be
+commit_count: 2
+rows:
+  - sha: 244ab5a0e38207b75d0fcd2e0616535f55839a88
+    source_ref: git:244ab5a0e38207b75d0fcd2e0616535f55839a88
+    short_sha: 244ab5a
+    changed_paths:
+      - pipersynth/_warnings.py
+      - pipersynth/config.py
+      - pipersynth/types.py
+      - tests/test_pipeline.py
+      - tests/test_utterplan_integration.py
+      - tests/test_voice.py
+    stats:
+      files_changed: 6
+      insertions: 83
+      deletions: 27
+    inspected: true
+    inspected_paths:
+      - pipersynth/_warnings.py
+      - pipersynth/config.py
+      - pipersynth/types.py
+      - tests/test_pipeline.py
+      - tests/test_utterplan_integration.py
+      - tests/test_voice.py
+    observed_behavior:
+      Warnings now point to external call sites, and deprecation and
+      invalid-value behavior has focused tests.
+    public_impact: public
+    decision: accepted
+    stale: false
+    evidence_subject: "feat: handle warnings better"
+    target_entry_id: entry-0001
+    notes: ""
+  - sha: b8ec8e3ceb3e56f9604ac2c1bd67503b8304f4be
+    source_ref: git:b8ec8e3ceb3e56f9604ac2c1bd67503b8304f4be
+    short_sha: b8ec8e3
+    changed_paths:
+      - README.md
+      - pipersynth/__main__.py
+      - pipersynth/config.py
+      - pipersynth/types.py
+      - pyproject.toml
+      - tests/test_cli.py
+      - tests/test_pipeline.py
+    stats:
+      files_changed: 7
+      insertions: 33
+      deletions: 264
+    inspected: true
+    inspected_paths:
+      - README.md
+      - pipersynth/__main__.py
+      - pipersynth/config.py
+      - pipersynth/types.py
+      - pyproject.toml
+      - tests/test_cli.py
+      - tests/test_pipeline.py
+    observed_behavior:
+      Removed command-line interfaces and directed users to the programmatic
+      VoiceAssetManager API.
+    public_impact: public
+    decision: accepted
+    stale: false
+    evidence_subject: "feat: remove cli"
+    target_entry_id: entry-0002
+    notes: ""

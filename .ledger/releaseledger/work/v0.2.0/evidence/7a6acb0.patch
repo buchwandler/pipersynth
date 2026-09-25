@@ -1,0 +1,1828 @@
+ .../data/ledgers/main/events/events.jsonl          |  11 +
+ .../main/releases/v0.1.3/entries/entry-0001.md     |  10 +-
+ .../main/releases/v0.1.3/entries/entry-0002.md     |   4 +-
+ .../main/releases/v0.1.3/entries/entry-0004.md     |  11 +-
+ .../main/releases/v0.1.3/entries/entry-0005.md     |  12 +-
+ .../main/releases/v0.1.3/entries/entry-0006.md     |   8 +-
+ .../main/releases/v0.1.3/entries/entry-0007.md     |   4 +-
+ .../main/releases/v0.1.3/entries/entry-0008.md     |   4 +-
+ .../main/releases/v0.1.3/entries/entry-0010.md     |  21 +-
+ README.md                                          |  31 +-
+ docs/architecture.md                               |  26 +-
+ docs/changelog.md                                  |  12 +-
+ docs/performance.md                                |   8 +-
+ examples/README.md                                 |   1 +
+ examples/long_text.py                              |  50 +++
+ pipersynth/__init__.py                             |   4 +
+ pipersynth/convenience.py                          |  28 +-
+ pipersynth/types.py                                |  25 +-
+ pipersynth/voice.py                                | 360 ++++++++++++++++-----
+ pyproject.toml                                     |   3 +-
+ tests/test_engine_public_api.py                    |  86 ++++-
+ tests/test_engine_voice.py                         | 244 ++++++++++++--
+ tests/test_examples_runner.py                      |   7 +
+ tests/test_onnxvoice_boundary.py                   |  10 +-
+ tests/test_voice_leveling.py                       |   3 +-
+ 25 files changed, 805 insertions(+), 178 deletions(-)
+
+diff --git a/.ledger/releaseledger/data/ledgers/main/events/events.jsonl b/.ledger/releaseledger/data/ledgers/main/events/events.jsonl
+index 60b0989..2b3ef74 100644
+--- a/.ledger/releaseledger/data/ledgers/main/events/events.jsonl
++++ b/.ledger/releaseledger/data/ledgers/main/events/events.jsonl
+@@ -22,3 +22,14 @@
+ {"data":{"entry_ids":["entry-0001","entry-0002","entry-0003","entry-0004","entry-0005","entry-0006","entry-0007","entry-0008","entry-0009"],"synced_audit_rows":6},"event":"entry.batch_added","event_id":"event-0022","record_revisions":{"commit_audit_sheet":3,"entry:v0.1.3/entry-0001":1,"entry:v0.1.3/entry-0002":1,"entry:v0.1.3/entry-0003":1,"entry:v0.1.3/entry-0004":1,"entry:v0.1.3/entry-0005":1,"entry:v0.1.3/entry-0006":1,"entry:v0.1.3/entry-0007":1,"entry:v0.1.3/entry-0008":1,"entry:v0.1.3/entry-0009":1,"release:v0.1.3":3},"release_version":"v0.1.3","schema_version":2}
+ {"data":{"kind":"changed","status":"accepted"},"entry_id":"entry-0010","event":"entry.added","event_id":"event-0023","record_revisions":{"entry:v0.1.3/entry-0010":1,"release:v0.1.3":4},"release_version":"v0.1.3","schema_version":2}
+ {"data":{"added_source_refs":[],"fields":["summary"],"removed_source_refs":[],"source_refs_mode":"unchanged"},"entry_id":"entry-0010","event":"entry.updated","event_id":"event-0024","record_revisions":{"entry:v0.1.3/entry-0010":2},"release_version":"v0.1.3","schema_version":2}
++{"data":{"added_source_refs":["tl:task-0015","git:6e1d76d55301e228bb9951a32c56e5c02e989525"],"fields":["body","source_refs","summary"],"removed_source_refs":[],"source_refs_mode":"merge"},"entry_id":"entry-0010","event":"entry.updated","event_id":"event-0025","record_revisions":{"entry:v0.1.3/entry-0010":3},"release_version":"v0.1.3","schema_version":2}
++{"data":{"added_source_refs":[],"fields":["body","paths","summary"],"removed_source_refs":[],"source_refs_mode":"unchanged"},"entry_id":"entry-0001","event":"entry.updated","event_id":"event-0026","record_revisions":{"entry:v0.1.3/entry-0001":2},"release_version":"v0.1.3","schema_version":2}
++{"data":{"added_source_refs":[],"fields":["status"],"reason":"Superseded by the final standalone-engine boundary; whole-document LUFS and true-peak mastering are outside PiperSynth and are not shipped.","removed_source_refs":[],"source_refs_mode":"unchanged"},"entry_id":"entry-0002","event":"entry.updated","event_id":"event-0027","record_revisions":{"entry:v0.1.3/entry-0002":2},"release_version":"v0.1.3","schema_version":2}
++{"data":{"added_source_refs":[],"fields":["body","paths","summary"],"removed_source_refs":[],"source_refs_mode":"unchanged"},"entry_id":"entry-0004","event":"entry.updated","event_id":"event-0028","record_revisions":{"entry:v0.1.3/entry-0004":2},"release_version":"v0.1.3","schema_version":2}
++{"data":{"added_source_refs":[],"fields":["body","paths","summary"],"removed_source_refs":[],"source_refs_mode":"unchanged"},"entry_id":"entry-0005","event":"entry.updated","event_id":"event-0029","record_revisions":{"entry:v0.1.3/entry-0005":2},"release_version":"v0.1.3","schema_version":2}
++{"data":{"added_source_refs":[],"fields":["body","summary"],"removed_source_refs":[],"source_refs_mode":"unchanged"},"entry_id":"entry-0006","event":"entry.updated","event_id":"event-0030","record_revisions":{"entry:v0.1.3/entry-0006":2},"release_version":"v0.1.3","schema_version":2}
++{"data":{"added_source_refs":[],"fields":["status"],"reason":"Superseded by the standalone PiperVoice API; PiperSynth no longer provides Utterplan plan rendering or depends on Utterplan.","removed_source_refs":[],"source_refs_mode":"unchanged"},"entry_id":"entry-0007","event":"entry.updated","event_id":"event-0031","record_revisions":{"entry:v0.1.3/entry-0007":2},"release_version":"v0.1.3","schema_version":2}
++{"data":{"added_source_refs":[],"fields":["status"],"reason":"Superseded by source-aligned SynthesisSegment annotations; old plan-adapter clipping behavior and APIs do not ship.","removed_source_refs":[],"source_refs_mode":"unchanged"},"entry_id":"entry-0008","event":"entry.updated","event_id":"event-0032","record_revisions":{"entry:v0.1.3/entry-0008":2},"release_version":"v0.1.3","schema_version":2}
++{"data":{"added_source_refs":[],"fields":["paths"],"removed_source_refs":[],"source_refs_mode":"unchanged"},"entry_id":"entry-0010","event":"entry.updated","event_id":"event-0033","record_revisions":{"entry:v0.1.3/entry-0010":4},"release_version":"v0.1.3","schema_version":2}
++{"data":{"added_source_refs":[],"fields":["summary"],"removed_source_refs":[],"source_refs_mode":"unchanged"},"entry_id":"entry-0004","event":"entry.updated","event_id":"event-0034","record_revisions":{"entry:v0.1.3/entry-0004":3},"release_version":"v0.1.3","schema_version":2}
++{"data":{"added_source_refs":[],"fields":["summary"],"removed_source_refs":[],"source_refs_mode":"unchanged"},"entry_id":"entry-0010","event":"entry.updated","event_id":"event-0035","record_revisions":{"entry:v0.1.3/entry-0010":5},"release_version":"v0.1.3","schema_version":2}
+diff --git a/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0001.md b/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0001.md
+index 1a055ea..f2e0f99 100644
+--- a/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0001.md
++++ b/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0001.md
+@@ -3,23 +3,23 @@ schema_version: 2
+ object_type: release_entry
+ versioning:
+   schema_version: 1
+-  revision: 1
++  revision: 2
+ entry_id: entry-0001
+ release_version: v0.1.3
+ kind: added
+ summary:
+-  Added calibrated voice leveling with LoudnessConfig and a validated offline
+-  per-voice gain catalog
++  Added static voice-level calibration with validated per-model and speaker
++  gain data
+ status: accepted
+ audience: null
+ scopes: []
+ source_refs:
+   - git:e4f1c6860f03ffec363d09ac2d03c0eeaad4aad4
+ paths:
+-  - pipersynth/loudness_config.py
+   - pipersynth/voice_level.py
+   - pipersynth/voice.py
+   - pipersynth/__init__.py
++  - pipersynth/data/voice_level_calibration.json
+ issues: []
+ prs: []
+ sources:
+@@ -31,4 +31,4 @@ internal: false
+ order: 1
+ ---
+
+-LoudnessConfig configures voice leveling, target LUFS, true-peak ceiling, peak policy, and an explicit voice gain on pipeline and synthesis configuration. Calibration lookup uses exact piper model, quality, and speaker identities from a strictly validated offline catalog and applies one deterministic static gain after legacy peak normalization. Synthesis never measures LUFS at runtime and missing identities are zero-gain diagnostic no-ops.
++VoiceLevelConfig supports deterministic engine-local gain adjustments keyed by exact Piper model, quality, and speaker identities. The packaged catalog is validated offline. Calibration applies after optional request peak normalization and before explicit output_gain; PiperSynth does not measure LUFS at runtime or master complete documents.
+diff --git a/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0002.md b/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0002.md
+index 755be92..b702f84 100644
+--- a/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0002.md
++++ b/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0002.md
+@@ -3,14 +3,14 @@ schema_version: 2
+ object_type: release_entry
+ versioning:
+   schema_version: 1
+-  revision: 1
++  revision: 2
+ entry_id: entry-0002
+ release_version: v0.1.3
+ kind: changed
+ summary:
+   Changed complete-output rendering to apply target LUFS and true-peak ceiling
+   policy for whole-document output
+-status: accepted
++status: rejected
+ audience: null
+ scopes: []
+ source_refs: []
+diff --git a/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0004.md b/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0004.md
+index a3b00f8..9947ee7 100644
+--- a/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0004.md
++++ b/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0004.md
+@@ -3,19 +3,20 @@ schema_version: 2
+ object_type: release_entry
+ versioning:
+   schema_version: 1
+-  revision: 1
++  revision: 3
+ entry_id: entry-0004
+ release_version: v0.1.3
+ kind: quality
+ summary:
+-  Improved calibration promotion with coverage count validation and reviewed
+-  partial promotion
++  Improved calibration promotion with coverage validation and explicit partial-coverage
++  review
+ status: accepted
+ audience: null
+ scopes: []
+ source_refs: []
+ paths:
+-  - benchmarks/voice_loudness_calibration.py
++  - benchmarks/promote_voice_calibration.py
++  - tests/test_voice_level_benchmark.py
+ issues: []
+ prs: []
+ sources:
+@@ -28,4 +29,4 @@ internal: false
+ order: 4
+ ---
+
+-build_runtime_calibration rejects inconsistent coverage counts, promotes explicitly reviewed statuses without the MAD gate, and requires an explicit opt-in for partial coverage instead of silently accepting incomplete reports.
++Candidate catalog generation checks that reported identity counts, completeness flags, repeat counts, policy-derived gains, and eligibility statuses agree. Partial coverage requires an explicit opt-in, and promotion writes a separate candidate rather than the packaged production catalog.
+diff --git a/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0005.md b/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0005.md
+index c663451..27aaa1a 100644
+--- a/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0005.md
++++ b/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0005.md
+@@ -3,21 +3,21 @@ schema_version: 2
+ object_type: release_entry
+ versioning:
+   schema_version: 1
+-  revision: 1
++  revision: 2
+ entry_id: entry-0005
+ release_version: v0.1.3
+ kind: quality
+ summary:
+-  Improved loudness benchmark measurement with isolated per-model workers and
+-  phase-tagged failure reporting
++  Improved voice-level benchmark reports with repeatable model-speaker measurements
++  and phase-tagged failures
+ status: accepted
+ audience: null
+ scopes: []
+ source_refs:
+   - git:b87a4e9bfde6d6c7c2d4f2d9c29a54cd9ff9e9a6
+ paths:
+-  - benchmarks/voice_loudness.py
+-  - tests/test_voice_loudness_benchmark.py
++  - benchmarks/voice_level_benchmark.py
++  - tests/test_voice_level_benchmark.py
+ issues: []
+ prs: []
+ sources:
+@@ -30,4 +30,4 @@ internal: false
+ order: 5
+ ---
+
+-One pipeline is opened per model and reused across its speaker identities. Each model runs in a fresh worker process with atomic JSON results. Failures carry phase and error_type fields, non-finite metrics are rejected, and locale count stimuli are resolved in a preflight before any synthesis.
++The benchmark measures prepared stimuli for selected catalog voice and speaker identities, reuses a voice across identities for each model, and writes structured JSON reports. Voice-opening and synthesis failures retain explicit phase and error-type fields; no document mastering is performed.
+diff --git a/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0006.md b/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0006.md
+index b6a658b..8fbba11 100644
+--- a/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0006.md
++++ b/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0006.md
+@@ -3,13 +3,13 @@ schema_version: 2
+ object_type: release_entry
+ versioning:
+   schema_version: 1
+-  revision: 1
++  revision: 2
+ entry_id: entry-0006
+ release_version: v0.1.3
+ kind: docs
+ summary:
+-  Documented catalog voices, per-speaker calibration identities, and Spokenform
+-  language gaps in an all-voices example
++  Documented Piper catalog voice discovery and model-speaker identities in
++  an all-voices example
+ status: accepted
+ audience: null
+ scopes: []
+@@ -30,4 +30,4 @@ internal: false
+ order: 6
+ ---
+
+-examples/all_voices.py prints the catalog without downloading voice models and writes inventory, language, and missing-language reports below example-artefacts. The full showcase is resource-heavy and runs only with an explicit runner flag.
++The all-voices example lists catalog metadata without downloading models, writes a local inventory, and optionally synthesizes one prepared sample for a selected voice and model speaker.
+diff --git a/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0007.md b/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0007.md
+index 06b9d93..8401d06 100644
+--- a/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0007.md
++++ b/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0007.md
+@@ -3,14 +3,14 @@ schema_version: 2
+ object_type: release_entry
+ versioning:
+   schema_version: 1
+-  revision: 1
++  revision: 2
+ entry_id: entry-0007
+ release_version: v0.1.3
+ kind: changed
+ summary:
+   Changed plan rendering to add prepare_plan_segments for canonical speech-only
+   segments on the utterplan 0.2 line
+-status: accepted
++status: rejected
+ audience: null
+ scopes: []
+ source_refs:
+diff --git a/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0008.md b/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0008.md
+index dba981f..a91b852 100644
+--- a/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0008.md
++++ b/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0008.md
+@@ -3,14 +3,14 @@ schema_version: 2
+ object_type: release_entry
+ versioning:
+   schema_version: 1
+-  revision: 1
++  revision: 2
+ entry_id: entry-0008
+ release_version: v0.1.3
+ kind: changed
+ summary:
+   Improved prepared units with linguistic run provenance and morphological
+   token annotations clipped to segment spans
+-status: accepted
++status: rejected
+ audience: null
+ scopes: []
+ source_refs: []
+diff --git a/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0010.md b/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0010.md
+index d91e06c..1c2eb6a 100644
+--- a/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0010.md
++++ b/.ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0010.md
+@@ -3,28 +3,37 @@ schema_version: 2
+ object_type: release_entry
+ versioning:
+   schema_version: 1
+-  revision: 2
++  revision: 5
+ entry_id: entry-0010
+ release_version: v0.1.3
+ kind: changed
+ summary:
+-  Changed PiperSynth from a document-oriented pipeline into a standalone PiperVoice
+-  synthesis engine
++  Changed PiperSynth to a standalone engine with protected regex chunking for
++  prepared text
+ status: accepted
+ audience: null
+ scopes: []
+ source_refs:
+   - tl:task-0014
++  - tl:task-0015
++  - git:6e1d76d55301e228bb9951a32c56e5c02e989525
+ paths:
+   - README.md
++  - docs/architecture.md
++  - docs/performance.md
++  - examples/README.md
++  - examples/long_text.py
+   - pyproject.toml
+-  - pipersynth/voice.py
+-  - pipersynth/types.py
+   - pipersynth/__init__.py
++  - pipersynth/convenience.py
++  - pipersynth/types.py
++  - pipersynth/voice.py
+   - pipersynth/pipeline.py
+   - pipersynth/planning.py
+   - pipersynth/preparation.py
+   - pipersynth/composition.py
++  - tests/test_engine_public_api.py
++  - tests/test_engine_voice.py
+ issues: []
+ prs: []
+ sources: []
+@@ -34,4 +43,4 @@ internal: false
+ order: 10
+ ---
+
+-The public API accepts prepared request text, returns independent rendered audio, and streams request-local sentence chunks. Removed document planning, semantic text preparation, composition, and their legacy APIs from PiperSynth; callers retain control over document timelines and final mastering. This is a breaking API and dependency-boundary change.
++Callers provide prepared, speakable text. TextChunkingConfig defaults to Phrasplit regex sentence splitting and supports max_chars; mode=none bypasses only PiperSynth pre-segmentation while PiperG2P retains its normal sentence groups. Split boundaries are merged across pronunciation overrides, token annotations, and raw phoneme blocks, preserving exact source offsets. PiperSynth joins inferred audio in source order without semantic silence, document timelines, or final mastering. This remains a breaking API and dependency-boundary change.
+diff --git a/README.md b/README.md
+index c5e2f7f..cc44950 100644
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,6 @@
+ # PiperSynth
+
+-PiperSynth is a standalone synthesis engine for Piper-compatible ONNX voices. It accepts prepared, speakable text, applies Piper-specific frontend and acoustic policy, calls OnnxVoice for inference, and returns independent rendered speech. PiperG2P owns text phonemization and Piper ID generation. Document parsing, SSMD, written-to-spoken preparation, semantic pauses, markers, timeline composition, and final mastering belong to other layers.
++PiperSynth is a standalone synthesis engine for Piper-compatible ONNX voices. Callers provide prepared, speakable text; PiperG2P owns phonemization and Piper ID generation, OnnxVoice handles model inference, and PiperSynth applies engine-local acoustic and audio policy. Document parsing, SSMD, written-to-spoken preparation, semantic pauses, markers, timeline composition, and final mastering belong to other layers.
+
+ ## Install
+
+@@ -27,6 +27,33 @@ with PiperVoice.from_pretrained("en_US-lessac-medium") as voice:
+
+ `prepared_text` is ordinary speakable text, not phoneme IDs. PiperSynth does not expand numbers, dates, abbreviations, or other written forms. Perform that semantic preparation before calling the engine.
+
++## Long prepared text
++
++Sentence chunking is the default. `max_chars` can add request-local splits for long or run-on text. PiperSynth uses Phrasplit in regex mode and preserves exact ranges into the prepared string. Boundaries that cross a pronunciation override, token annotation, or raw `[[...]]` phoneme block are merged, so a protected span is never clipped. A merged part can therefore exceed `max_chars`.
++
++```python
++from pipersynth import PiperVoice, TextChunkingConfig
++
++prepared_text = (
++    "The first prepared paragraph describes the field observations and the "
++    "conditions recorded during the morning survey.\n\n"
++    "A second paragraph continues the account without asking PiperSynth to "
++    "interpret or prepare a source document."
++)
++
++with PiperVoice.from_pretrained("en_US-lessac-medium") as voice:
++    result = voice.synthesize_text(
++        prepared_text,
++        language="en-us",
++        chunking=TextChunkingConfig(max_chars=100),
++    )
++
++for chunk in result.chunks:
++    source = chunk.metadata["text_chunk"]
++    print(source["char_start"], source["char_end"])
++```
++
++Every chunk's `text_chunk` metadata contains `char_start`, `char_end`, and the split mode. Sentence-mode chunks also include the regex backend and Phrasplit split ID. The request summary is available in `result.metadata["text_chunking"]`. `TextChunkingConfig(mode="none")` disables only PiperSynth's pre-segmentation; PiperG2P may still return its normal sentence groups.
+ For repeated requests, reuse one voice:
+
+ ```python
+@@ -79,7 +106,7 @@ Offsets use Python half-open ranges into the exact prepared string. PiperSynth f
+
+ ## Streaming and low-level IDs
+
+-`PiperVoice.iter_chunks()` yields request-local chunks for nonempty PiperG2P sentence groups. It inserts no semantic silence. `PiperVoice.synthesize()` joins those chunks into one `RenderedSegment`.
++`PiperVoice.iter_chunks()` applies the configured text pre-segmentation, then yields each nonempty PiperG2P sentence group as soon as it is inferred. `PiperVoice.synthesize()` joins those chunks in source order without adding silence. Each chunk exposes its source range in `chunk.metadata["text_chunk"]`; use `TextChunkingConfig(mode="none")` to bypass only PiperSynth's text pre-segmentation.
+
+ `PiperVoice.synthesize_ids()` remains available for callers that already have Piper phoneme IDs. ID validation, speaker selection, acoustic controls, voice calibration, and waveform postprocessing still apply.
+
+diff --git a/docs/architecture.md b/docs/architecture.md
+index d44b12b..e14b257 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -4,30 +4,30 @@ PiperSynth is a Piper synthesis engine. It accepts one prepared speech request,
+
+ ## Ownership
+
+-| Responsibility                                                                             | Owner                         |
+-| ------------------------------------------------------------------------------------------ | ----------------------------- |
+-| Document parsing, SSMD, written-to-spoken preparation, logical voice roles                 | Application or document layer |
+-| Piper frontend, phonemization, sentence groups, Piper IDs                                  | PiperG2P                      |
+-| Voice catalogs, asset installation, provider selection, ONNX sessions, inference           | OnnxVoice                     |
+-| Piper speaker resolution, acoustic scales, request-local joining, static voice calibration | PiperSynth                    |
+-| Timeline pauses, markers, resampling, mixing, final mastering                              | Caller or AudioCompose        |
++| Responsibility                                                                                                    | Owner                       |
++| ----------------------------------------------------------------------------------------------------------------- | --------------------------- |
++| Document parsing, SSMD, written-to-spoken preparation, logical voice roles                                        | Caller or application layer |
++| Piper phonemization, sentence groups, and Piper IDs                                                               | PiperG2P                    |
++| Voice catalogs, asset installation, provider selection, ONNX sessions, and inference                              | OnnxVoice                   |
++| Optional prepared-text splitting, source offsets, speaker resolution, chunk joining, and static voice calibration | PiperSynth                  |
++| Timeline pauses, markers, resampling, mixing, and final mastering                                                 | Caller or AudioCompose      |
+
+ PiperSynth has no runtime dependency on Utterplan, SSMD, or AudioCompose. Those systems may construct `SynthesisSegment` requests and compose returned audio outside this package.
+
+ ## Request lifecycle
+
+ 1. The caller prepares speakable text and creates a `SynthesisSegment` or calls `synthesize_text()`.
+-2. PiperSynth validates the active model language and resolves a speaker name or ID within that model.
+-3. PiperSynth converts source-aligned pronunciation overrides and token annotations to PiperG2P types. It preserves offsets and fields such as `morph`.
+-4. PiperG2P returns ordered sentence groups. PiperSynth infers every nonempty ID group separately.
+-5. PiperSynth validates each native-rate waveform, applies normalization, static voice calibration, and explicit `output_gain`, then joins the chunks directly without inserted silence.
+-6. The request returns one `RenderedSegment`. Runtime timing and output-tensor summaries remain diagnostics, not word alignment.
++2. `TextChunkingConfig` defaults to sentence pre-segmentation. PiperSynth lazily uses Phrasplit's exact offsets in regex mode, optionally with `max_chars`.
++3. PiperSynth merges any candidate boundary that crosses an override, token annotation, or raw `[[...]]` block, then remaps protected offsets into each exact source slice. `mode="none"` bypasses this pre-segmentation and its Phrasplit import.
++4. PiperSynth validates the active model language and speaker, then calls the configured PiperG2P path for each text part. PiperG2P continues to own phonemization, Piper IDs, and its normal sentence groups.
++5. PiperSynth infers each nonempty G2P group, validates native-rate audio, applies normalization, static voice calibration, and explicit `output_gain`, then joins chunks in source order without inserted silence.
++6. The request returns one `RenderedSegment` containing the complete prepared text, per-chunk source ranges, chunking summary, warnings, and frontend diagnostics. Runtime timing and output-tensor summaries remain diagnostics, not word alignment.
+
+ Each request has independent audio. PiperSynth does not create a global timeline, markers, document pauses, or fabricated word timings.
+
+ ## Voice lifecycle
+
+-`PiperVoice.from_pretrained()` installs or reuses an OnnxVoice-managed Piper voice. `PiperVoice.from_local()` opens a local model through OnnxVoice and uses the adjacent `<model>.json` config unless another config path is supplied. Context-manager exit closes the runtime and any frontend created by PiperSynth.
++`PiperVoice.from_pretrained()` installs or reuses an OnnxVoice-managed Piper voice. `PiperVoice.from_local()` opens a local model through OnnxVoice and uses the adjacent `<model>.json` config unless another config path is supplied. Context-manager exit closes the OnnxVoice runtime.
+
+ A `PiperVoice` remains bound to one Piper model. A different model requires another voice instance. A different speaker within a multi-speaker model is selected on `SynthesisSegment.speaker` or `synthesize_text(speaker=...)`.
+
+diff --git a/docs/changelog.md b/docs/changelog.md
+index 565c02c..ad2fbde 100644
+--- a/docs/changelog.md
++++ b/docs/changelog.md
+@@ -4,23 +4,21 @@
+
+ ### Added
+
+-- Added calibrated voice leveling with LoudnessConfig and a validated offline per-voice gain catalog
++- Added static voice-level calibration with validated per-model and speaker gain data
+ - Added the packaged voice loudness calibration catalog for measured Piper speaker identities at -24 LUFS
+
+ ### Changed
+
+-- Changed complete-output rendering to apply target LUFS and true-peak ceiling policy for whole-document output
+-- Changed plan rendering to add prepare_plan_segments for canonical speech-only segments on the utterplan 0.2 line
+-- Improved prepared units with linguistic run provenance and morphological token annotations clipped to segment spans
++- **BREAKING:** Changed PiperSynth to a standalone engine with protected regex chunking for prepared text
+
+ ### Documentation
+
+-- Documented catalog voices, per-speaker calibration identities, and Spokenform language gaps in an all-voices example
++- Documented Piper catalog voice discovery and model-speaker identities in an all-voices example
+
+ ### Quality
+
+-- Improved calibration promotion with coverage count validation and reviewed partial promotion
+-- Improved loudness benchmark measurement with isolated per-model workers and phase-tagged failure reporting
++- Improved calibration promotion with coverage validation and explicit partial-coverage review
++- Improved voice-level benchmark reports with repeatable model-speaker measurements and phase-tagged failures
+
+ <!-- generated by releaseledger -->
+
+diff --git a/docs/performance.md b/docs/performance.md
+index 2477aef..a2ff22e 100644
+--- a/docs/performance.md
++++ b/docs/performance.md
+@@ -11,7 +11,11 @@ with PiperVoice.from_pretrained("en_US-lessac-medium") as voice:
+     second = voice.synthesize_text("Second prepared request.", language="en-us")
+ ```
+
+-`iter_chunks()` yields request-local PiperG2P sentence groups as soon as each group is inferred. `synthesize()` collects and joins those chunks without adding silence. Use caller-side streaming or AudioCompose for document-level timelines.
++`iter_chunks()` first derives prepared-text parts with Phrasplit's exact offsets in regex mode, then phonemizes and infers each part incrementally. PiperG2P still owns its sentence groups, so one text part can yield multiple rendered chunks. `synthesize()` joins them in source order without adding silence.
++
++`TextChunkingConfig` defaults to sentence splitting and accepts `max_chars` for long or run-on text. Chunk metadata identifies the exact `[char_start, char_end)` slice of the original prepared request, and the result summary reports the splitter diagnostics and number of text parts. Overrides, annotations, and raw phoneme blocks protect their complete spans; merging can make a part longer than the requested character limit. Use `mode="none"` to skip PiperSynth splitting while retaining PiperG2P sentence groups.
++
++These are synthesis-engine chunks, not semantic pauses or document timeline segments. Use caller-side streaming or AudioCompose when a larger application needs document-level composition.
+
+ ## Static voice-level calibration
+
+@@ -23,6 +27,6 @@ The packaged calibration catalog is `pipersynth/data/voice_level_calibration.jso
+
+ ## Re-measuring calibration
+
+-The calibration benchmark accepts explicit prepared text and a matching Piper language. It does not invoke Spokenform or expand numbers. Review its measurement report before promoting data. Promotion writes a separate catalog and refuses to overwrite the packaged production catalog.
++The calibration benchmark accepts explicit prepared text and a matching Piper language. It measures the supplied text as-is and does not expand numbers. Review its measurement report before promoting data. Promotion writes a separate catalog and refuses to overwrite the packaged production catalog.
+
+ See `benchmarks/README.md` for the measurement and promotion workflow.
+diff --git a/examples/README.md b/examples/README.md
+index 92ff289..713c9db 100644
+--- a/examples/README.md
++++ b/examples/README.md
+@@ -38,4 +38,5 @@ For a multi-speaker model, pass a numeric ID or an actual model speaker name wit
+ - `homographs.py` forwards a source-aligned pronunciation override.
+ - `punctuation.py` shows PiperG2P processing prepared punctuation.
+ - `stream.py` writes request-local sentence-group chunks incrementally.
++- `long_text.py` uses bounded request-local text chunks and reports exact source ranges.
+ - `all_voices.py` lists catalog metadata and optionally synthesizes one voice.
+diff --git a/examples/long_text.py b/examples/long_text.py
+new file mode 100644
+index 0000000..876fd9d
+--- /dev/null
++++ b/examples/long_text.py
+@@ -0,0 +1,50 @@
++#!/usr/bin/env python3
++"""Synthesize prepared long text and report request-local source ranges."""
++
++from __future__ import annotations
++
++import os
++
++from pipersynth import PiperVoice, TextChunkingConfig
++
++try:
++    from examples._output import artefact_path
++except ModuleNotFoundError:
++    from _output import artefact_path
++
++VOICE = os.environ.get("PIPERSYNTH_EXAMPLE_VOICE", "en_US-lessac-medium")
++TEXT = (
++    "The field team arrived shortly after sunrise and checked the instruments "
++    "before beginning the survey. They recorded the air temperature, inspected "
++    "the sample containers, and compared each reading with the previous day's "
++    "notes. A light wind moved across the ridge, but the equipment remained "
++    "stable throughout the first round of measurements.\n\n"
++    "At midday, the team repeated the checks at the eastern station. The new "
++    "readings were close to the morning values, so the crew continued toward "
++    "the river crossing. They described the route, the condition of the trail, "
++    "and the locations where the signal briefly weakened. Every observation "
++    "was entered as prepared speakable text before it was sent to PiperSynth.\n\n"
++    "In the afternoon, the crew returned to the starting point and reviewed "
++    "the final set of measurements. The equipment was packed away, and the "
++    "team confirmed that all samples had been labeled correctly. This example "
++    "uses request-local sentence and character-limit chunking only. It does "
++    "not parse a document, plan semantic pauses, or create a timeline."
++)
++
++with PiperVoice.from_pretrained(VOICE) as voice:
++    result = voice.synthesize_text(
++        TEXT,
++        language="en-us",
++        chunking=TextChunkingConfig(max_chars=240),
++    )
++
++wav_path = artefact_path("long_text.wav")
++result.save_wav(wav_path)
++print(f"Rendered prepared long text with {VOICE}: {wav_path}")
++for chunk in result.chunks:
++    source = chunk.metadata["text_chunk"]
++    print(
++        f"chunk {chunk.index}: [{source['char_start']}:{source['char_end']}] "
++        f"{TEXT[source['char_start'] : source['char_end']]!r}"
++    )
++print(f"Chunking summary: {result.metadata['text_chunking']}")
+diff --git a/pipersynth/__init__.py b/pipersynth/__init__.py
+index a467c8d..03588a9 100644
+--- a/pipersynth/__init__.py
++++ b/pipersynth/__init__.py
+@@ -41,6 +41,8 @@ from .types import (
+     RenderedSegment,
+     SynthesisConfig,
+     SynthesisSegment,
++    TextChunkingConfig,
++    TextSplitMode,
+ )
+ from .voice import PiperVoice
+ from .voice_level import (
+@@ -87,6 +89,8 @@ __all__ = [
+     "SynthesisConfig",
+     "SynthesisError",
+     "SynthesisSegment",
++    "TextChunkingConfig",
++    "TextSplitMode",
+     "UnsupportedModelError",
+     "VoiceAssetManager",
+     "VoiceBundle",
+diff --git a/pipersynth/convenience.py b/pipersynth/convenience.py
+index 7621af7..1a1be01 100644
+--- a/pipersynth/convenience.py
++++ b/pipersynth/convenience.py
+@@ -6,10 +6,12 @@ from collections.abc import Callable, Sequence
+ from pathlib import Path
+ from typing import Any
+
++from piperg2p import get_g2p
++
+ from .asset_progress import AssetProgressEvent
+ from .errors import InvalidSynthesisConfigError
+ from .session import ProviderConfig, ProviderSpec
+-from .types import RenderedSegment, SynthesisConfig
++from .types import RenderedSegment, SynthesisConfig, TextChunkingConfig
+ from .voice import PiperVoice
+ from .voice_level import VoiceLevelConfig
+
+@@ -44,7 +46,9 @@ def _render_prepared_text(
+     providers: Sequence[ProviderSpec | ProviderConfig] | None,
+     provider_options: dict[str, Any] | None,
+     session_options: Any | None,
+-    frontend_options: dict[str, Any] | None,
++    g2p_factory: Callable[..., Any],
++    g2p_options: dict[str, Any] | None,
++    chunking: TextChunkingConfig | None,
+     cache_dir: str | Path | None,
+     offline: bool | None,
+     refresh_catalog: bool,
+@@ -66,7 +70,8 @@ def _render_prepared_text(
+         providers=providers,
+         provider_options=provider_options,
+         session_options=session_options,
+-        frontend_options=frontend_options,
++        g2p_factory=g2p_factory,
++        g2p_options=g2p_options,
+         progress=progress,
+     ) as engine:
+         return engine.synthesize_text(
+@@ -75,6 +80,7 @@ def _render_prepared_text(
+             id=id,
+             speaker=speaker,
+             config=config,
++            chunking=chunking,
+         )
+
+
+@@ -94,7 +100,9 @@ def synthesize(
+     providers: Sequence[ProviderSpec | ProviderConfig] | None = None,
+     provider_options: dict[str, Any] | None = None,
+     session_options: Any | None = None,
+-    frontend_options: dict[str, Any] | None = None,
++    g2p_factory: Callable[..., Any] = get_g2p,
++    g2p_options: dict[str, Any] | None = None,
++    chunking: TextChunkingConfig | None = None,
+     cache_dir: str | Path | None = None,
+     offline: bool | None = None,
+     refresh_catalog: bool = False,
+@@ -120,7 +128,9 @@ def synthesize(
+         providers=providers,
+         provider_options=provider_options,
+         session_options=session_options,
+-        frontend_options=frontend_options,
++        g2p_factory=g2p_factory,
++        g2p_options=g2p_options,
++        chunking=chunking,
+         cache_dir=cache_dir,
+         offline=offline,
+         refresh_catalog=refresh_catalog,
+@@ -164,7 +174,9 @@ def synthesize_to_wav(
+     providers: Sequence[ProviderSpec | ProviderConfig] | None = None,
+     provider_options: dict[str, Any] | None = None,
+     session_options: Any | None = None,
+-    frontend_options: dict[str, Any] | None = None,
++    g2p_factory: Callable[..., Any] = get_g2p,
++    g2p_options: dict[str, Any] | None = None,
++    chunking: TextChunkingConfig | None = None,
+     cache_dir: str | Path | None = None,
+     offline: bool | None = None,
+     refresh_catalog: bool = False,
+@@ -190,7 +202,9 @@ def synthesize_to_wav(
+         providers=providers,
+         provider_options=provider_options,
+         session_options=session_options,
+-        frontend_options=frontend_options,
++        g2p_factory=g2p_factory,
++        g2p_options=g2p_options,
++        chunking=chunking,
+         cache_dir=cache_dir,
+         offline=offline,
+         refresh_catalog=refresh_catalog,
+diff --git a/pipersynth/types.py b/pipersynth/types.py
+index 76c5fc3..a8bcb04 100644
+--- a/pipersynth/types.py
++++ b/pipersynth/types.py
+@@ -2,7 +2,7 @@ from __future__ import annotations
+
+ from dataclasses import dataclass, field
+ from pathlib import Path
+-from typing import Any, BinaryIO
++from typing import Any, BinaryIO, Literal
+
+ import numpy as np
+
+@@ -155,6 +155,29 @@ class SynthesisConfig:
+             raise InvalidSynthesisConfigError("voice_level must be a VoiceLevelConfig")
+
+
++TextSplitMode = Literal["sentence", "none"]
++
++
++@dataclass(frozen=True, slots=True)
++class TextChunkingConfig:
++    """Request-local prepared-text segmentation policy."""
++
++    mode: TextSplitMode = "sentence"
++    max_chars: int | None = None
++
++    def __post_init__(self) -> None:
++        if self.mode not in ("sentence", "none"):
++            raise ValueError("mode must be 'sentence' or 'none'")
++        if self.max_chars is not None and (
++            isinstance(self.max_chars, bool)
++            or not isinstance(self.max_chars, int)
++            or self.max_chars < 1
++        ):
++            raise ValueError("max_chars must be a positive integer or None")
++        if self.mode == "none" and self.max_chars is not None:
++            raise ValueError("max_chars requires sentence chunking")
++
++
+ @dataclass(slots=True)
+ class RenderedChunk:
+     index: int
+diff --git a/pipersynth/voice.py b/pipersynth/voice.py
+index c674de8..4e76fe6 100644
+--- a/pipersynth/voice.py
++++ b/pipersynth/voice.py
+@@ -7,7 +7,14 @@ from typing import Any
+ from uuid import uuid4
+
+ import numpy as np
+-from piperg2p import OverrideSpan, PiperFrontend, TokenAnnotation, VoiceConfig, get_g2p
++from piperg2p import (
++    OverrideSpan,
++    RawPhonemeSegment,
++    TokenAnnotation,
++    VoiceConfig,
++    get_g2p,
++    parse_raw_blocks,
++)
+
+ from ._onnxvoice import (
+     ResolvedPiperVoice,
+@@ -30,10 +37,13 @@ from .errors import (
+ )
+ from .session import ProviderConfig, ProviderSpec
+ from .types import (
++    LinguisticToken,
++    PronunciationOverride,
+     RenderedChunk,
+     RenderedSegment,
+     SynthesisConfig,
+     SynthesisSegment,
++    TextChunkingConfig,
+ )
+ from .voice_level import (
+     VoiceCalibrationKey,
+@@ -69,28 +79,179 @@ class PiperInference:
+     output_summary: Mapping[str, Any] = field(default_factory=dict)
+
+
++@dataclass(frozen=True, slots=True)
++class _TextPart:
++    segment: SynthesisSegment
++    metadata: Mapping[str, Any]
++
++
++def _remap_segment(segment: SynthesisSegment, start: int, end: int) -> SynthesisSegment:
++    overrides = tuple(
++        PronunciationOverride(
++            override.start - start,
++            override.end - start,
++            override.phonemes,
++            override.language,
++            override.stress,
++        )
++        for override in segment.pronunciation_overrides
++        if start <= override.start and override.end <= end
++    )
++    annotations = tuple(
++        LinguisticToken(
++            token.start - start,
++            token.end - start,
++            token.text,
++            token.pos,
++            token.tag,
++            token.lemma,
++            token.language,
++            token.morph,
++        )
++        for token in segment.annotations
++        if start <= token.start and token.end <= end
++    )
++    return SynthesisSegment(
++        id=segment.id,
++        text=segment.text[start:end],
++        language=segment.language,
++        speaker=segment.speaker,
++        pronunciation_overrides=overrides,
++        annotations=annotations,
++    )
++
++
++def _request_text_parts(
++    segment: SynthesisSegment, chunking: TextChunkingConfig | None
++) -> tuple[_TextPart, ...]:
++    chunking = chunking if chunking is not None else TextChunkingConfig()
++    if not isinstance(chunking, TextChunkingConfig):
++        raise TypeError("chunking must be a TextChunkingConfig")
++    if chunking.mode == "none":
++        return (
++            _TextPart(
++                segment,
++                {
++                    "split_mode": "none",
++                    "char_start": 0,
++                    "char_end": len(segment.text),
++                },
++            ),
++        )
++
++    from phrasplit import split_with_offsets_with_diagnostics
++
++    result = split_with_offsets_with_diagnostics(
++        segment.text,
++        mode="sentence",
++        use_spacy=False,
++        language=segment.language,
++        max_chars=chunking.max_chars,
++    )
++    spans = tuple(result.segments)
++    backend = f"phrasplit-{result.diagnostics.backend}"
++    split_diagnostics = {
++        "backend": result.diagnostics.backend,
++        "language": result.diagnostics.language,
++        "analysis_source": result.diagnostics.analysis_source,
++        "model_owned_by_caller": result.diagnostics.model_owned_by_caller,
++    }
++    protected_ranges = [
++        (override.start, override.end) for override in segment.pronunciation_overrides
++    ]
++    protected_ranges.extend(
++        (annotation.start, annotation.end) for annotation in segment.annotations
++    )
++    protected_ranges.extend(
++        (raw.source_start, raw.source_end)
++        for raw in parse_raw_blocks(segment.text)
++        if isinstance(raw, RawPhonemeSegment) and raw.source_end is not None
++    )
++    if not spans:
++        return (
++            _TextPart(
++                segment,
++                {
++                    "split_mode": "sentence",
++                    "split_backend": backend,
++                    "split_diagnostics": split_diagnostics,
++                    "char_start": 0,
++                    "char_end": len(segment.text),
++                    "split_id": None,
++                },
++            ),
++        )
++
++    candidate_ends = [span.char_end for span in spans]
++    candidate_ends[-1] = len(segment.text)
++    part_ends = [
++        boundary
++        for boundary in candidate_ends
++        if not any(start < boundary < end for start, end in protected_ranges)
++    ]
++    parts: list[_TextPart] = []
++    part_start = 0
++    for part_end in part_ends:
++        if part_end <= part_start:
++            continue
++        split_ids = tuple(
++            span.id for span in spans if span.char_end > part_start and span.char_start < part_end
++        )
++        part_segment = _remap_segment(segment, part_start, part_end)
++        parts.append(
++            _TextPart(
++                part_segment,
++                {
++                    "split_mode": "sentence",
++                    "split_backend": backend,
++                    "split_diagnostics": split_diagnostics,
++                    "char_start": part_start,
++                    "char_end": part_end,
++                    "split_id": "+".join(split_ids) if split_ids else None,
++                },
++            )
++        )
++        part_start = part_end
++    if part_start < len(segment.text):
++        parts.append(
++            _TextPart(
++                _remap_segment(segment, part_start, len(segment.text)),
++                {
++                    "split_mode": "sentence",
++                    "split_backend": backend,
++                    "split_diagnostics": split_diagnostics,
++                    "char_start": part_start,
++                    "char_end": len(segment.text),
++                    "split_id": None,
++                },
++            )
++        )
++    return tuple(parts)
++
++
+ class PiperVoice:
+-    """Piper policy and frontend wrapped around an OnnxVoice runtime."""
++    """Piper policy using PiperG2P around an OnnxVoice runtime."""
+
+     def __init__(
+         self,
+         runtime: Any,
+         config: VoiceConfig,
+-        frontend: PiperFrontend,
+         *,
+-        owns_frontend: bool = False,
++        g2p_factory: Callable[..., Any] = get_g2p,
++        g2p_options: Mapping[str, Any] | None = None,
+         model_path: str | Path | None = None,
+         config_path: str | Path | None = None,
+         installation: Any | None = None,
+     ) -> None:
+         self.runtime = runtime
+         self.config = config
+-        self.frontend = frontend
+-        self._owns_frontend = owns_frontend
++        self._g2p_factory = g2p_factory
++        self._g2p_options = dict(g2p_options or {})
+         self.model_path = Path(model_path) if model_path is not None else None
+         self.config_path = Path(config_path) if config_path is not None else None
+         self.installation = installation
+         self._closed = False
++        self._last_g2p_diagnostics: Any | None = None
+
+         self._last_voice_level_application: VoiceLevelApplication | None = None
+
+@@ -102,29 +263,21 @@ class PiperVoice:
+         providers: Sequence[ProviderSpec | ProviderConfig] | None = None,
+         provider_options: Mapping[str, Any] | None = None,
+         session_options: Any | None = None,
+-        frontend_options: Mapping[str, Any] | None = None,
+-        frontend: PiperFrontend | None = None,
++        g2p_factory: Callable[..., Any] = get_g2p,
++        g2p_options: Mapping[str, Any] | None = None,
+     ) -> PiperVoice:
+         config = VoiceConfig.from_json(resolved.config_path)
+-        owns_frontend = frontend is None
+-        if frontend is None:
+-            frontend = PiperFrontend(config, **dict(frontend_options or {}))
+-        try:
+-            runtime = open_installed_voice(
+-                resolved,
+-                providers=providers,
+-                provider_options=provider_options,
+-                session_options=session_options,
+-            )
+-        except Exception:
+-            if owns_frontend:
+-                frontend.close()
+-            raise
++        runtime = open_installed_voice(
++            resolved,
++            providers=providers,
++            provider_options=provider_options,
++            session_options=session_options,
++        )
+         return cls(
+             runtime,
+             config,
+-            frontend,
+-            owns_frontend=owns_frontend,
++            g2p_factory=g2p_factory,
++            g2p_options=g2p_options,
+             model_path=resolved.model_path,
+             config_path=resolved.config_path,
+             installation=resolved.installation,
+@@ -138,7 +291,8 @@ class PiperVoice:
+         providers: Sequence[ProviderSpec | ProviderConfig] | None = None,
+         provider_options: Mapping[str, Any] | None = None,
+         session_options: Any | None = None,
+-        frontend_options: Mapping[str, Any] | None = None,
++        g2p_factory: Callable[..., Any] = get_g2p,
++        g2p_options: Mapping[str, Any] | None = None,
+     ) -> PiperVoice:
+         """Load a managed VoiceBundle without discarding its catalog identity."""
+         if getattr(bundle, "installation", None) is None:
+@@ -148,7 +302,8 @@ class PiperVoice:
+                 providers=providers,
+                 provider_options=provider_options,
+                 session_options=session_options,
+-                frontend_options=frontend_options,
++                g2p_factory=g2p_factory,
++                g2p_options=g2p_options,
+             )
+         from ._onnxvoice import installation_to_voice_info
+
+@@ -157,7 +312,8 @@ class PiperVoice:
+             providers=providers,
+             provider_options=provider_options,
+             session_options=session_options,
+-            frontend_options=frontend_options,
++            g2p_factory=g2p_factory,
++            g2p_options=g2p_options,
+         )
+
+     @classmethod
+@@ -169,8 +325,8 @@ class PiperVoice:
+         providers: Sequence[ProviderSpec | ProviderConfig] | None = None,
+         provider_options: Mapping[str, Any] | None = None,
+         session_options: Any | None = None,
+-        frontend: PiperFrontend | None = None,
+-        frontend_options: Mapping[str, Any] | None = None,
++        g2p_factory: Callable[..., Any] = get_g2p,
++        g2p_options: Mapping[str, Any] | None = None,
+     ) -> PiperVoice:
+         """Load an explicit local Piper model through OnnxVoice."""
+
+@@ -181,26 +337,18 @@ class PiperVoice:
+         if not config_file.exists():
+             raise ConfigFileNotFoundError(f"Voice config file does not exist: {config_file}")
+         config = VoiceConfig.from_json(config_file)
+-        owns_frontend = frontend is None
+-        if frontend is None:
+-            frontend = PiperFrontend(config, **dict(frontend_options or {}))
+-        try:
+-            runtime = open_local_voice(
+-                model,
+-                config_file,
+-                providers=providers,
+-                provider_options=provider_options,
+-                session_options=session_options,
+-            )
+-        except Exception:
+-            if owns_frontend:
+-                frontend.close()
+-            raise
++        runtime = open_local_voice(
++            model,
++            config_file,
++            providers=providers,
++            provider_options=provider_options,
++            session_options=session_options,
++        )
+         return cls(
+             runtime,
+             config,
+-            frontend,
+-            owns_frontend=owns_frontend,
++            g2p_factory=g2p_factory,
++            g2p_options=g2p_options,
+             model_path=model,
+             config_path=config_file,
+         )
+@@ -217,7 +365,8 @@ class PiperVoice:
+         providers: Sequence[ProviderSpec | ProviderConfig] | None = None,
+         provider_options: Mapping[str, Any] | None = None,
+         session_options: Any | None = None,
+-        frontend_options: Mapping[str, Any] | None = None,
++        g2p_factory: Callable[..., Any] = get_g2p,
++        g2p_options: Mapping[str, Any] | None = None,
+         progress: Callable[[AssetProgressEvent], None] | None = None,
+     ) -> PiperVoice:
+         resolved = install_pretrained_voice(
+@@ -233,7 +382,8 @@ class PiperVoice:
+             providers=providers,
+             provider_options=provider_options,
+             session_options=session_options,
+-            frontend_options=frontend_options,
++            g2p_factory=g2p_factory,
++            g2p_options=g2p_options,
+         )
+
+     @property
+@@ -244,8 +394,8 @@ class PiperVoice:
+     def diagnostics(self) -> RuntimeDiagnostics:
+         self._ensure_open()
+         runtime_fields = runtime_diagnostics(self.runtime)
+-        frontend_diagnostics = getattr(self.frontend, "diagnostics", None)
+-        frontend_name = getattr(frontend_diagnostics, "backend", None)
++        g2p_diagnostics = self._last_g2p_diagnostics
++        frontend_name = getattr(g2p_diagnostics, "backend", None)
+         speaker_names = tuple(getattr(self.config, "speaker_id_map", {}).keys())
+         return RuntimeDiagnostics(
+             model_path=runtime_fields.get("model_path")
+@@ -418,7 +568,7 @@ class PiperVoice:
+                     f"language {segment.language!r} is incompatible with active Piper model language "
+                     f"{model_language!r}; use a source-aligned language override for supported spans"
+                 )
+-        g2p = get_g2p(segment.language, config=self.config)
++        g2p = self._g2p_factory(segment.language, config=self.config, **self._g2p_options)
+         overrides = tuple(
+             OverrideSpan(
+                 override.start,
+@@ -444,11 +594,13 @@ class PiperVoice:
+             )
+             for token in segment.annotations
+         )
+-        return g2p.phonemize_prepared(
++        result = g2p.phonemize_prepared(
+             segment.text,
+             overrides=overrides or None,
+             annotations=annotations or None,
+         )
++        self._last_g2p_diagnostics = result.diagnostics
++        return result
+
+     def _iter_rendered_chunks(
+         self,
+@@ -456,9 +608,16 @@ class PiperVoice:
+         phonemized: Any,
+         synthesis_config: SynthesisConfig,
+         speaker_id: int | None,
++        *,
++        chunk_index_start: int = 0,
++        request_warnings: Sequence[str] | None = None,
++        text_chunk_metadata: Mapping[str, Any] | None = None,
+     ) -> Iterator[RenderedChunk]:
+-        chunk_index = 0
+-        request_warnings = tuple(phonemized.warnings)
++        chunk_index = chunk_index_start
++        warnings_for_request = (
++            tuple(phonemized.warnings) if request_warnings is None else tuple(request_warnings)
++        )
++        is_first_chunk = True
+         for sentence in phonemized.sentences:
+             if not sentence.ids:
+                 continue
+@@ -473,6 +632,8 @@ class PiperVoice:
+                 metadata["inference_output"] = inference.output_summary
+             if phonemized.diagnostics is not None:
+                 metadata["frontend_diagnostics"] = phonemized.diagnostics
++            if text_chunk_metadata is not None:
++                metadata["text_chunk"] = dict(text_chunk_metadata)
+             application = self.last_voice_level_application
+             if application is not None:
+                 metadata["voice_level"] = {
+@@ -481,8 +642,10 @@ class PiperVoice:
+                     "source": application.source,
+                     "key": str(application.key) if application.key else None,
+                 }
+-            warnings = tuple(
+-                dict.fromkeys((*sentence.warnings, *(request_warnings if chunk_index == 0 else ())))
++            chunk_warnings = tuple(
++                dict.fromkeys(
++                    (*sentence.warnings, *(warnings_for_request if is_first_chunk else ()))
++                )
+             )
+             yield RenderedChunk(
+                 index=chunk_index,
+@@ -491,31 +654,58 @@ class PiperVoice:
+                 segment_id=segment.id,
+                 phonemes=tuple(sentence.phonemes),
+                 phoneme_ids=tuple(sentence.ids),
+-                warnings=warnings,
++                warnings=chunk_warnings,
+                 metadata=metadata,
+             )
+             chunk_index += 1
++            is_first_chunk = False
++
++    def _iter_phonemized_parts(
++        self, parts: Sequence[_TextPart]
++    ) -> Iterator[tuple[_TextPart, Any, tuple[str, ...]]]:
++        seen_warnings: set[str] = set()
++        for part in parts:
++            phonemized = self._phonemize_segment(part.segment)
++            new_warnings = tuple(
++                warning for warning in phonemized.warnings if warning not in seen_warnings
++            )
++            seen_warnings.update(phonemized.warnings)
++            yield part, phonemized, new_warnings
+
+     def iter_chunks(
+         self,
+         segment: SynthesisSegment,
+         *,
+         config: SynthesisConfig | None = None,
++        chunking: TextChunkingConfig | None = None,
+     ) -> Iterator[RenderedChunk]:
+-        """Yield one inferred chunk per PiperG2P sentence group in a request."""
++        """Yield inferred Piper sentence groups in source order."""
+         self._ensure_open()
+         if not isinstance(segment, SynthesisSegment):
+             raise TypeError("segment must be a SynthesisSegment")
+         synthesis_config = config or SynthesisConfig()
+         speaker_id = self.resolve_speaker_id(segment.speaker)
+-        phonemized = self._phonemize_segment(segment)
+-        yield from self._iter_rendered_chunks(segment, phonemized, synthesis_config, speaker_id)
++        parts = _request_text_parts(segment, chunking)
++        chunk_index = 0
++        for part, phonemized, request_warnings in self._iter_phonemized_parts(parts):
++            for chunk in self._iter_rendered_chunks(
++                part.segment,
++                phonemized,
++                synthesis_config,
++                speaker_id,
++                chunk_index_start=chunk_index,
++                request_warnings=request_warnings,
++                text_chunk_metadata=part.metadata,
++            ):
++                yield chunk
++                chunk_index = chunk.index + 1
+
+     def synthesize(
+         self,
+         segment: SynthesisSegment,
+         *,
+         config: SynthesisConfig | None = None,
++        chunking: TextChunkingConfig | None = None,
+     ) -> RenderedSegment:
+         """Render one independent prepared-text speech request."""
+         self._ensure_open()
+@@ -523,10 +713,25 @@ class PiperVoice:
+             raise TypeError("segment must be a SynthesisSegment")
+         synthesis_config = config or SynthesisConfig()
+         speaker_id = self.resolve_speaker_id(segment.speaker)
+-        phonemized = self._phonemize_segment(segment)
+-        chunks = tuple(
+-            self._iter_rendered_chunks(segment, phonemized, synthesis_config, speaker_id)
+-        )
++        text_parts = _request_text_parts(segment, chunking)
++        rendered_chunks: list[RenderedChunk] = []
++        all_warnings: list[str] = []
++        chunk_index = 0
++        for part, phonemized, new_warnings in self._iter_phonemized_parts(text_parts):
++            all_warnings.extend(new_warnings)
++            for chunk in self._iter_rendered_chunks(
++                part.segment,
++                phonemized,
++                synthesis_config,
++                speaker_id,
++                chunk_index_start=chunk_index,
++                request_warnings=new_warnings,
++                text_chunk_metadata=part.metadata,
++            ):
++                rendered_chunks.append(chunk)
++                all_warnings.extend(chunk.warnings)
++                chunk_index = chunk.index + 1
++        chunks = tuple(rendered_chunks)
+         audio = (
+             np.concatenate([chunk.audio for chunk in chunks]).astype(np.float32, copy=False)
+             if chunks
+@@ -534,14 +739,20 @@ class PiperVoice:
+         )
+         phonemes = tuple(symbol for chunk in chunks for symbol in chunk.phonemes)
+         phoneme_ids = tuple(identifier for chunk in chunks for identifier in chunk.phoneme_ids)
+-        warnings = tuple(
+-            dict.fromkeys(
+-                (*phonemized.warnings, *(warning for chunk in chunks for warning in chunk.warnings))
+-            )
+-        )
+-        metadata: dict[str, Any] = {}
+-        if phonemized.diagnostics is not None:
+-            metadata["frontend_diagnostics"] = phonemized.diagnostics
++        warnings = tuple(dict.fromkeys(all_warnings))
++        metadata: dict[str, Any] = {
++            "text_chunking": {
++                "mode": (chunking or TextChunkingConfig()).mode,
++                "backend": text_parts[0].metadata.get("split_backend"),
++                "diagnostics": text_parts[0].metadata.get("split_diagnostics"),
++                "input_chars": len(segment.text),
++                "text_parts": len(text_parts),
++                "rendered_chunks": len(chunks),
++                "max_chars": (chunking or TextChunkingConfig()).max_chars,
++            }
++        }
++        if self._last_g2p_diagnostics is not None:
++            metadata["frontend_diagnostics"] = self._last_g2p_diagnostics
+         if chunks and "voice_level" in chunks[-1].metadata:
+             metadata["voice_level"] = chunks[-1].metadata["voice_level"]
+         return RenderedSegment(
+@@ -567,6 +778,7 @@ class PiperVoice:
+         id: str | None = None,
+         speaker: int | str | None = None,
+         config: SynthesisConfig | None = None,
++        chunking: TextChunkingConfig | None = None,
+     ) -> RenderedSegment:
+         """Synthesize already-prepared speakable text."""
+         segment = SynthesisSegment(
+@@ -575,7 +787,7 @@ class PiperVoice:
+             language=language,
+             speaker=speaker,
+         )
+-        return self.synthesize(segment, config=config)
++        return self.synthesize(segment, config=config, chunking=chunking)
+
+     def warmup(self) -> None:
+         self._ensure_open()
+@@ -584,8 +796,6 @@ class PiperVoice:
+     def close(self) -> None:
+         if self._closed:
+             return
+-        if self._owns_frontend:
+-            self.frontend.close()
+         close = getattr(self.runtime, "close", None)
+         if close is not None:
+             close()
+diff --git a/pyproject.toml b/pyproject.toml
+index 9c8cc58..b899449 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -12,7 +12,8 @@ license = {text = "Apache-2.0"}
+ authors = [{name = "PiperSynth contributors"}]
+ dependencies = [
+   "numpy>=1.23",
+-  "piperg2p>=0.1.6,<0.2",
++  "piperg2p>=0.1.7,<0.2",
++  "phrasplit>=0.3.6,<0.4",
+   "onnxvoice>=0.1.10,<0.2",
+   "audiosig>=0.1.4,<0.2",
+  ]
+diff --git a/tests/test_engine_public_api.py b/tests/test_engine_public_api.py
+index dbaa779..5ddc263 100644
+--- a/tests/test_engine_public_api.py
++++ b/tests/test_engine_public_api.py
+@@ -7,10 +7,16 @@ from pathlib import Path
+ from typing import Any
+
+ import numpy as np
++import pytest
+
+ import pipersynth
+ import pipersynth.convenience as convenience
+-from pipersynth import RenderedSegment, SynthesisConfig, VoiceLevelConfig
++from pipersynth import (
++    RenderedSegment,
++    SynthesisConfig,
++    TextChunkingConfig,
++    VoiceLevelConfig,
++)
+
+
+ class FakePiperVoice:
+@@ -97,6 +103,7 @@ def test_convenience_synthesizes_prepared_text_through_piper_voice(monkeypatch)
+         output_gain=0.8,
+         voice_level=VoiceLevelConfig(mode="calibrated", gain_db=1.0),
+         offline=True,
++        chunking=TextChunkingConfig(mode="none"),
+     )
+     assert isinstance(result, RenderedSegment)
+     assert result.text == "Prepared text."
+@@ -107,6 +114,7 @@ def test_convenience_synthesizes_prepared_text_through_piper_voice(monkeypatch)
+     assert request[0] == "Prepared text."
+     assert request[1]["language"] == "en-us"
+     assert request[1]["id"] == "item-1"
++    assert request[1]["chunking"] == TextChunkingConfig(mode="none")
+     assert request[1]["speaker"] == "speaker_2"
+     config = request[1]["config"]
+     assert isinstance(config, SynthesisConfig)
+@@ -122,11 +130,87 @@ def test_convenience_wav_helper_writes_independent_result(monkeypatch, tmp_path:
+         tmp_path / "nested" / "speech.wav",
+         voice="test-voice",
+         language="en-us",
++        chunking=TextChunkingConfig(mode="none"),
+     )
+     assert output.exists()
++    assert FakePiperVoice.request is not None
++    assert FakePiperVoice.request[1]["chunking"] == TextChunkingConfig(mode="none")
+     with wave.open(str(output), "rb") as wav:
+         assert wav.getnchannels() == 1
+         assert wav.getsampwidth() == 2
+         assert wav.getframerate() == 22050
+         assert wav.getnframes() == 2
+     assert not tuple(output.parent.glob("*.tmp"))
++
++
++def test_public_text_chunking_config_validates_mode_and_limit() -> None:
++    assert pipersynth.TextChunkingConfig is TextChunkingConfig
++    assert TextChunkingConfig().mode == "sentence"
++    assert TextChunkingConfig(mode="sentence", max_chars=120).max_chars == 120
++    assert TextChunkingConfig(mode="none").max_chars is None
++
++    with pytest.raises(ValueError, match="mode"):
++        TextChunkingConfig(mode="all")  # type: ignore[arg-type]
++    with pytest.raises(ValueError, match="positive integer"):
++        TextChunkingConfig(max_chars=0)
++    with pytest.raises(ValueError, match="positive integer"):
++        TextChunkingConfig(max_chars=True)  # type: ignore[arg-type]
++    with pytest.raises(ValueError, match="requires sentence"):
++        TextChunkingConfig(mode="none", max_chars=10)
++
++
++def test_none_chunking_synthesizes_in_subprocess_without_phrasplit() -> None:
++    command = """\\
++import builtins
++from types import SimpleNamespace
++
++original_import = builtins.__import__
++def block_phrasplit(name, *args, **kwargs):
++    if name.partition(".")[0] == "phrasplit":
++        raise AssertionError("Phrasplit must not be imported in none mode")
++    return original_import(name, *args, **kwargs)
++builtins.__import__ = block_phrasplit
++
++import numpy as np
++from piperg2p import PhonemeSentence, VoiceConfig
++from pipersynth import PiperVoice, TextChunkingConfig
++
++config = VoiceConfig.from_dict({
++    "num_symbols": 4,
++    "num_speakers": 1,
++    "audio": {"sample_rate": 22050},
++    "phoneme_type": "text",
++    "espeak": {"voice": "en-us"},
++    "phoneme_id_map": {"_": [0], "^": [1], "$": [2], "a": [3]},
++})
++class Runtime:
++    def infer(self, ids, **kwargs):
++        return SimpleNamespace(
++            audio=np.array([0.1], dtype=np.float32), sample_rate=22050
++        )
++class G2P:
++    def phonemize_prepared(self, text, **kwargs):
++        return SimpleNamespace(
++            sentences=(PhonemeSentence(("a",), (3,)),),
++            warnings=(),
++            diagnostics=None,
++        )
++voice = PiperVoice(
++    Runtime(), config, g2p_factory=lambda language, *, config: G2P()
++ )
++result = voice.synthesize_text(
++    "prepared text",
++    language="en-us",
++    chunking=TextChunkingConfig(mode="none"),
++ )
++assert result.audio.size == 1
++assert [chunk.index for chunk in result.chunks] == [0]
++voice.close()
++"""
++    result = subprocess.run(
++        [sys.executable, "-c", command],
++        check=False,
++        capture_output=True,
++        text=True,
++    )
++    assert result.returncode == 0, result.stderr
+diff --git a/tests/test_engine_voice.py b/tests/test_engine_voice.py
+index 21b16bd..1c1e99f 100644
+--- a/tests/test_engine_voice.py
++++ b/tests/test_engine_voice.py
+@@ -10,7 +10,7 @@ import pytest
+ from piperg2p import PhonemeSentence, VoiceConfig
+
+ import pipersynth.voice as voice_module
+-from pipersynth import PiperVoice
++from pipersynth import PiperVoice, TextChunkingConfig
+ from pipersynth.errors import InvalidSynthesisConfigError
+ from pipersynth.types import (
+     LinguisticToken,
+@@ -65,20 +65,21 @@ class FakeG2P:
+         return self.result
+
+
+-class FakeFrontend:
+-    diagnostics = None
+-
+-    def close(self) -> None:
+-        pass
+-
+-
+-def test_synthesize_forwards_offsets_and_infers_each_nonempty_sentence(
+-    monkeypatch: pytest.MonkeyPatch,
+-) -> None:
++def test_synthesize_forwards_offsets_and_infers_each_nonempty_sentence() -> None:
+     runtime = FakeRuntime()
+     fake_g2p = FakeG2P()
+-    monkeypatch.setattr(voice_module, "get_g2p", lambda language, *, config: fake_g2p)
+-    voice = PiperVoice(runtime, voice_config(3), FakeFrontend())  # type: ignore[arg-type]
++    factory_calls: list[tuple[str, Any, dict[str, Any]]] = []
++
++    def make_g2p(language: str, *, config: Any, **options: Any) -> FakeG2P:
++        factory_calls.append((language, config, options))
++        return fake_g2p
++
++    voice = PiperVoice(
++        runtime,
++        voice_config(3),
++        g2p_factory=make_g2p,
++        g2p_options={"use_cli": True},
++    )
+     segment = SynthesisSegment(
+         id="line-17",
+         text="ab ab",
+@@ -137,11 +138,13 @@ def test_synthesize_forwards_offsets_and_infers_each_nonempty_sentence(
+     assert annotations[0].lemma == "ab"
+     assert annotations[0].language == "en-us"
+     assert result.diagnostics is not None
++    assert result.diagnostics.frontend == "fake"
++    assert factory_calls == [("en-us", voice.config, {"use_cli": True})]
+
+
+ def test_iter_chunks_yields_only_inferable_groups() -> None:
+     runtime = FakeRuntime()
+-    voice = PiperVoice(runtime, voice_config(), FakeFrontend())  # type: ignore[arg-type]
++    voice = PiperVoice(runtime, voice_config())
+     sentence_result = SimpleNamespace(
+         sentences=(PhonemeSentence((), ()), PhonemeSentence(("a",), (3,))),
+         warnings=(),
+@@ -158,8 +161,173 @@ def test_iter_chunks_yields_only_inferable_groups() -> None:
+     assert len(runtime.calls) == 1
+
+
++def test_sentence_chunking_uses_regex_spans_and_preserves_request_audio(monkeypatch) -> None:
++    import phrasplit
++
++    original_split = phrasplit.split_with_offsets_with_diagnostics
++    split_calls: list[tuple[str, dict[str, Any]]] = []
++
++    def record_split(text: str, **options: Any) -> Any:
++        split_calls.append((text, options))
++        return original_split(text, **options)
++
++    monkeypatch.setattr(phrasplit, "split_with_offsets_with_diagnostics", record_split)
++
++    runtime = FakeRuntime()
++    g2p = FakeG2P()
++    voice = PiperVoice(
++        runtime,
++        voice_config(),
++        g2p_factory=lambda language, *, config: g2p,
++    )
++    text = "Dr. Smith measured 3.14 volts. The U.S. team left.\n\nFinal sentence."
++    result = voice.synthesize(
++        SynthesisSegment("long", text, "en-us"),
++        config=SynthesisConfig(normalize_audio=False),
++    )
++
++    ranges = list(
++        dict.fromkeys(
++            (
++                chunk.metadata["text_chunk"]["char_start"],
++                chunk.metadata["text_chunk"]["char_end"],
++            )
++            for chunk in result.chunks
++        )
++    )
++    parts = [text[start:end] for start, end in ranges]
++    assert len(parts) == 3
++    assert "".join(parts) == text
++    assert [call[0] for call in g2p.calls] == parts
++    assert split_calls == [
++        (
++            text,
++            {
++                "mode": "sentence",
++                "use_spacy": False,
++                "language": "en-us",
++                "max_chars": None,
++            },
++        )
++    ]
++    assert [chunk.index for chunk in result.chunks] == list(range(6))
++    assert result.audio.tolist() == pytest.approx([0.2, -0.4] * 6)
++    assert result.text == text
++    assert result.metadata["text_chunking"] == {
++        "mode": "sentence",
++        "backend": "phrasplit-regex",
++        "diagnostics": {
++            "backend": "regex",
++            "language": "en",
++            "analysis_source": "regex",
++            "model_owned_by_caller": False,
++        },
++        "input_chars": len(text),
++        "text_parts": 3,
++        "rendered_chunks": 6,
++        "max_chars": None,
++    }
++    assert all(
++        chunk.metadata["text_chunk"]["split_backend"] == "phrasplit-regex"
++        for chunk in result.chunks
++    )
++
++
++def test_max_chars_splits_run_on_prepared_text_and_retains_offsets() -> None:
++    text = "alpha beta gamma delta epsilon zeta eta theta"
++    g2p = FakeG2P()
++    voice = PiperVoice(
++        FakeRuntime(),
++        voice_config(),
++        g2p_factory=lambda language, *, config: g2p,
++    )
++
++    result = voice.synthesize(
++        SynthesisSegment("run-on", text, "en-us"),
++        config=SynthesisConfig(normalize_audio=False),
++        chunking=TextChunkingConfig(max_chars=10),
++    )
++
++    ranges = list(
++        dict.fromkeys(
++            (
++                chunk.metadata["text_chunk"]["char_start"],
++                chunk.metadata["text_chunk"]["char_end"],
++            )
++            for chunk in result.chunks
++        )
++    )
++    parts = [text[start:end] for start, end in ranges]
++    assert len(parts) > 1
++    assert all(len(part) <= 10 for part in parts)
++    assert "".join(parts) == text
++    assert [call[0] for call in g2p.calls] == parts
++    assert result.metadata["text_chunking"]["max_chars"] == 10
++
++
++def test_protected_spans_merge_boundaries_and_remap_offsets() -> None:
++    text = "First. Second. Last."
++    last_start = text.index("Last")
++    segment = SynthesisSegment(
++        "protected",
++        text,
++        "en-us",
++        pronunciation_overrides=(
++            PronunciationOverride(4, 9, phonemes="a"),
++            PronunciationOverride(last_start, last_start + 4, phonemes="b"),
++        ),
++        annotations=(LinguisticToken(last_start, last_start + 4, text="Last"),),
++    )
++    g2p = FakeG2P()
++    voice = PiperVoice(
++        FakeRuntime(),
++        voice_config(),
++        g2p_factory=lambda language, *, config: g2p,
++    )
++
++    result = voice.synthesize(segment, config=SynthesisConfig(normalize_audio=False))
++
++    assert [call[0] for call in g2p.calls] == ["First. Second.", " Last."]
++    first_override = g2p.calls[0][1]["overrides"][0]
++    assert (first_override.char_start, first_override.char_end) == (4, 9)
++    last_override = g2p.calls[1][1]["overrides"][0]
++    assert (last_override.char_start, last_override.char_end) == (1, 5)
++    annotation = g2p.calls[1][1]["annotations"][0]
++    assert (annotation.start, annotation.end, annotation.text) == (1, 5, "Last")
++    assert [chunk.index for chunk in result.chunks] == [0, 1, 2, 3]
++    assert result.warnings == (
++        "frontend warning",
++        "first sentence",
++        "last sentence",
++    )
++    assert result.audio.size == len(result.chunks) * 2
++
++
++def test_raw_phoneme_blocks_are_never_split() -> None:
++    text = "First. [[Dr. A. B.]] Last."
++    g2p = FakeG2P()
++    voice = PiperVoice(
++        FakeRuntime(),
++        voice_config(),
++        g2p_factory=lambda language, *, config: g2p,
++    )
++
++    result = voice.synthesize(
++        SynthesisSegment("raw", text, "en-us"),
++        config=SynthesisConfig(normalize_audio=False),
++    )
++
++    parts = [call[0] for call in g2p.calls]
++    raw_start = text.index("[[")
++    raw_end = text.index("]]", raw_start) + 2
++    assert len(parts) == 2
++    assert "".join(parts) == text
++    ranges = [chunk.metadata["text_chunk"] for chunk in result.chunks]
++    assert any(item["char_start"] <= raw_start and item["char_end"] >= raw_end for item in ranges)
++
++
+ def test_language_must_match_active_espeak_voice_without_span_routing() -> None:
+-    voice = PiperVoice(FakeRuntime(), voice_config(phoneme_type="espeak"), FakeFrontend())  # type: ignore[arg-type]
++    voice = PiperVoice(FakeRuntime(), voice_config(phoneme_type="espeak"))
+     segment = SynthesisSegment("id", "hello", "de-de")
+     with pytest.raises(InvalidSynthesisConfigError, match="incompatible"):
+         voice.synthesize(segment)
+@@ -167,7 +335,7 @@ def test_language_must_match_active_espeak_voice_without_span_routing() -> None:
+
+ def test_synthesize_ids_keeps_low_level_inference_controls() -> None:
+     runtime = FakeRuntime()
+-    voice = PiperVoice(runtime, voice_config(3), FakeFrontend())  # type: ignore[arg-type]
++    voice = PiperVoice(runtime, voice_config(3))
+     audio = voice.synthesize_ids(
+         [3, 4],
+         SynthesisConfig(
+@@ -186,13 +354,14 @@ def test_synthesize_ids_keeps_low_level_inference_controls() -> None:
+     assert runtime.calls[0][1]["noise_w"] == 0.6
+
+
+-def test_synthesize_text_passes_prepared_text_and_requested_speaker(
+-    monkeypatch: pytest.MonkeyPatch,
+-) -> None:
++def test_synthesize_text_passes_prepared_text_and_requested_speaker() -> None:
+     runtime = FakeRuntime()
+-    frontend = FakeG2P()
+-    monkeypatch.setattr(voice_module, "get_g2p", lambda language, *, config: frontend)
+-    voice = PiperVoice(runtime, voice_config(3), FakeFrontend())  # type: ignore[arg-type]
++    fake_g2p = FakeG2P()
++    voice = PiperVoice(
++        runtime,
++        voice_config(3),
++        g2p_factory=lambda language, *, config: fake_g2p,
++    )
+
+     result = voice.synthesize_text(
+         "Already prepared.", language="en-us", id="prepared-1", speaker="alice"
+@@ -200,7 +369,9 @@ def test_synthesize_text_passes_prepared_text_and_requested_speaker(
+
+     assert result.id == "prepared-1"
+     assert result.text == "Already prepared."
+-    assert frontend.calls[0][0] == "Already prepared."
++    assert fake_g2p.calls[0][0] == "Already prepared."
++    assert result.diagnostics is not None
++    assert result.diagnostics.frontend == "fake"
+     assert runtime.calls[0][1]["speaker_id"] == 1
+
+
+@@ -212,7 +383,6 @@ def test_local_voice_opens_through_onnxvoice(
+     model.write_bytes(b"model")
+     config_path.write_text(json.dumps(voice_config().to_dict()))
+     runtime = FakeRuntime()
+-    frontend = FakeFrontend()
+     opened: dict[str, Any] = {}
+
+     def open_local(model_path, config_file, **kwargs):
+@@ -220,18 +390,34 @@ def test_local_voice_opens_through_onnxvoice(
+         return runtime
+
+     monkeypatch.setattr(voice_module, "open_local_voice", open_local)
+-    monkeypatch.setattr(voice_module, "PiperFrontend", lambda config, **kwargs: frontend)
++    fake_g2p = FakeG2P()
++    factory_calls: list[tuple[str, Any, dict[str, Any]]] = []
+
+-    voice = PiperVoice.from_local(model)
++    def make_g2p(language: str, *, config: Any, **options: Any) -> FakeG2P:
++        factory_calls.append((language, config, options))
++        return fake_g2p
++
++    voice = PiperVoice.from_local(
++        model,
++        g2p_factory=make_g2p,
++        g2p_options={"use_cli": True},
++    )
+
+     assert voice.runtime is runtime
+     assert voice.model_path == model
+     assert voice.config_path == config_path
++    assert not hasattr(voice, "frontend")
++    assert factory_calls == []
+     assert opened == {
+         "model_path": model,
+         "config_path": config_path,
+         "options": {"providers": None, "provider_options": None, "session_options": None},
+     }
++    result = voice.synthesize_text("Loaded prepared text.", language="en-us")
++    assert fake_g2p.calls[0][0] == "Loaded prepared text."
++    assert factory_calls == [("en-us", voice.config, {"use_cli": True})]
++    assert result.diagnostics is not None
++    assert result.diagnostics.frontend == "fake"
+     voice.close()
+
+
+@@ -246,7 +432,7 @@ def test_runtime_summaries_are_kept_as_engine_diagnostics() -> None:
+                 outputs={"duration": np.zeros((1, 2), dtype=np.float32)},
+             )
+
+-    voice = PiperVoice(Runtime(), voice_config(), FakeFrontend())  # type: ignore[arg-type]
++    voice = PiperVoice(Runtime(), voice_config())
+     voice._phonemize_segment = lambda segment: SimpleNamespace(
+         sentences=(PhonemeSentence(("a",), (3,)),), warnings=(), diagnostics=None
+     )  # type: ignore[method-assign]
+@@ -260,7 +446,7 @@ def test_runtime_summaries_are_kept_as_engine_diagnostics() -> None:
+
+
+ def test_speaker_names_ids_and_default_are_resolved_within_active_voice() -> None:
+-    voice = PiperVoice(FakeRuntime(), voice_config(3), FakeFrontend())  # type: ignore[arg-type]
++    voice = PiperVoice(FakeRuntime(), voice_config(3))
+     assert voice.resolve_speaker_id("alice") == 1
+     assert voice.resolve_speaker_id(2) == 2
+     assert voice.resolve_speaker_id(None) == 2
+@@ -269,7 +455,7 @@ def test_speaker_names_ids_and_default_are_resolved_within_active_voice() -> Non
+ def test_invalid_speakers_are_rejected() -> None:
+     from pipersynth.errors import InvalidSpeakerError
+
+-    voice = PiperVoice(FakeRuntime(), voice_config(3), FakeFrontend())  # type: ignore[arg-type]
++    voice = PiperVoice(FakeRuntime(), voice_config(3))
+     with pytest.raises(InvalidSpeakerError, match="unknown speaker"):
+         voice.resolve_speaker_id("guest")
+     with pytest.raises(InvalidSpeakerError, match="outside"):
+diff --git a/tests/test_examples_runner.py b/tests/test_examples_runner.py
+new file mode 100644
+index 0000000..a7c515a
+--- /dev/null
++++ b/tests/test_examples_runner.py
+@@ -0,0 +1,7 @@
++from __future__ import annotations
++
++from examples.run_all import example_paths
++
++
++def test_long_text_example_is_registered_with_the_runner() -> None:
++    assert any(path.name == "long_text.py" for path in example_paths())
+diff --git a/tests/test_onnxvoice_boundary.py b/tests/test_onnxvoice_boundary.py
+index 2d873d9..1764cb1 100644
+--- a/tests/test_onnxvoice_boundary.py
++++ b/tests/test_onnxvoice_boundary.py
+@@ -5,7 +5,7 @@ from types import SimpleNamespace
+
+ import numpy as np
+ import pytest
+-from piperg2p import PiperFrontend, VoiceConfig
++from piperg2p import VoiceConfig
+
+ import pipersynth._onnxvoice as boundary
+ from pipersynth import PiperVoice, SynthesisConfig
+@@ -55,7 +55,7 @@ class FakeRuntime:
+ def test_voice_passes_piper_policy_to_onnxvoice_and_summarizes_outputs():
+     config = voice_config()
+     runtime = FakeRuntime()
+-    voice = PiperVoice(runtime, config, PiperFrontend(config))
++    voice = PiperVoice(runtime, config)
+
+     inference = voice._infer_ids(
+         [1, 3],
+@@ -81,7 +81,7 @@ def test_voice_passes_piper_policy_to_onnxvoice_and_summarizes_outputs():
+
+ def test_voice_wraps_inference_failure_and_preserves_cause():
+     error = RuntimeError("runtime failure")
+-    voice = PiperVoice(FakeRuntime(failure=error), voice_config(), PiperFrontend(voice_config()))
++    voice = PiperVoice(FakeRuntime(failure=error), voice_config())
+
+     with pytest.raises(ModelInferenceError) as raised:
+         voice.synthesize_ids([1, 3])
+@@ -90,9 +90,7 @@ def test_voice_wraps_inference_failure_and_preserves_cause():
+
+
+ def test_voice_rejects_native_sample_rate_mismatch():
+-    voice = PiperVoice(
+-        FakeRuntime(sample_rate=16000), voice_config(), PiperFrontend(voice_config())
+-    )
++    voice = PiperVoice(FakeRuntime(sample_rate=16000), voice_config())
+
+     with pytest.raises(ModelInferenceError, match="sample rate"):
+         voice.synthesize_ids([1, 3])
+diff --git a/tests/test_voice_leveling.py b/tests/test_voice_leveling.py
+index a92afd5..2f51ecd 100644
+--- a/tests/test_voice_leveling.py
++++ b/tests/test_voice_leveling.py
+@@ -68,7 +68,7 @@ def test_piper_voice_applies_explicit_engine_gain_and_output_gain() -> None:
+             )
+
+     config = voice_config()
+-    voice = PiperVoice(Runtime(), config, frontend=object())  # type: ignore[arg-type]
++    voice = PiperVoice(Runtime(), config)
+     audio = voice.synthesize_ids(
+         [1],
+         config=SynthesisConfig(
+@@ -88,7 +88,6 @@ def test_managed_calibration_key_uses_resolved_speaker_name() -> None:
+     voice = PiperVoice(
+         SimpleNamespace(infer=lambda *args, **kwargs: None),
+         config,
+-        frontend=object(),  # type: ignore[arg-type]
+         installation=installation,
+     )
+     assert voice.calibration_key("alice") == VoiceCalibrationKey(

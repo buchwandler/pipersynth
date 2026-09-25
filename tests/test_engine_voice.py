@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-from piperg2p import PhonemeSentence, VoiceConfig
+from piperg2p import PhonemeSentence, TokenAnnotation, VoiceConfig
 
 import pipersynth.voice as voice_module
 from pipersynth import (
@@ -145,6 +145,7 @@ def test_synthesize_passes_exact_request_to_g2p_and_runs_one_inference() -> None
     assert (override.char_start, override.char_end) == (4, 6)
     assert dict(override.attrs) == {"ph": "b", "lang": "de-de", "stress": 2}
     annotation = g2p.calls[0][1]["annotations"][0]
+    assert isinstance(annotation, TokenAnnotation)
     assert annotation.morph == "Number=Sing"
     assert annotation.text == "ab"
     assert annotation.pos == "NOUN"

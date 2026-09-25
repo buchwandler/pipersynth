@@ -1,0 +1,264 @@
+schema_version: 1
+object_type: commit_audit_sheet
+versioning:
+  schema_version: 1
+  revision: 4
+release_version: v0.2.0
+git_base_ref: v0.1.3
+git_base_sha: b45388ec48c7f4f89009c1e41d834a99672f7186
+git_head_ref: HEAD
+git_head_sha: a13812149614374affaf1867ef221b8b0c2704aa
+git_range: b45388ec48c7f4f89009c1e41d834a99672f7186..a13812149614374affaf1867ef221b8b0c2704aa
+commit_count: 4
+rows:
+  - sha: 2731e013a09cdc785c045e4f70c03d511f50428f
+    source_ref: git:2731e013a09cdc785c045e4f70c03d511f50428f
+    short_sha: 2731e01
+    changed_paths:
+      - .ledger/releaseledger/data/ledgers/main/events/events.jsonl
+      - .ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0010.md
+      - .ledger/releaseledger/data/ledgers/main/releases/v0.1.3/release.md
+      - MANIFEST.in
+      - README.md
+      - benchmarks/README.md
+      - benchmarks/data/voice_level_policy.json
+      - benchmarks/data/voice_loudness_count_fallbacks.json
+      - benchmarks/data/voice_loudness_policy.json
+      - benchmarks/promote_voice_calibration.py
+      - benchmarks/voice_level_benchmark.py
+      - benchmarks/voice_loudness.py
+      - benchmarks/voice_loudness_calibration.py
+      - docs/architecture.md
+      - docs/performance.md
+      - docs/providers.md
+      - docs/troubleshooting.md
+      - examples/README.md
+      - examples/all_voices.py
+      - examples/audio_job.py
+      - examples/basic.py
+      - examples/contractions.py
+      - examples/download_and_synthesize.py
+      - examples/german.py
+      - examples/homographs.py
+      - examples/pauses.py
+      - examples/pipeline.py
+      - examples/plan_roundtrip.py
+      - examples/pretrained_pipeline.py
+      - examples/punctuation.py
+      - examples/run_all.py
+      - examples/spokenform.py
+      - examples/ssmd.py
+      - examples/stream.py
+      - pipersynth/__init__.py
+      - pipersynth/_warnings.py
+      - pipersynth/audio.py
+      - pipersynth/audio_job.py
+      - pipersynth/composition.py
+      - pipersynth/config.py
+      - pipersynth/convenience.py
+      - pipersynth/diagnostics.py
+      - pipersynth/errors.py
+      - pipersynth/loudness_config.py
+      - pipersynth/pipeline.py
+      - pipersynth/plan_adapter.py
+      - pipersynth/planning.py
+      - pipersynth/preparation.py
+      - pipersynth/protocols.py
+      - pipersynth/session.py
+      - pipersynth/types.py
+      - pipersynth/voice.py
+      - pipersynth/voice_level.py
+      - pyproject.toml
+      - tests/test_all_voices_example.py
+      - tests/test_audio.py
+      - tests/test_audio_job.py
+      - tests/test_config.py
+      - tests/test_convenience.py
+      - tests/test_engine_public_api.py
+      - tests/test_engine_types.py
+      - tests/test_engine_voice.py
+      - tests/test_examples_runner.py
+      - tests/test_imports.py
+      - tests/test_integration.py
+      - tests/test_onnxvoice_boundary.py
+      - tests/test_packaged_voice_calibration_data.py
+      - tests/test_pipeline.py
+      - tests/test_preparation.py
+      - tests/test_pretrained_pipeline.py
+      - tests/test_results.py
+      - tests/test_session.py
+      - tests/test_utterplan_integration.py
+      - tests/test_utterplan_v2_annotations.py
+      - tests/test_voice.py
+      - tests/test_voice_level_benchmark.py
+      - tests/test_voice_leveling.py
+      - tests/test_voice_loudness_benchmark.py
+      - tests/test_voice_loudness_calibration.py
+      - tests/typecheck/engine_api.py
+      - tests/typecheck/public_api.py
+    stats:
+      files_changed: 81
+      insertions: 2493
+      deletions: 7569
+    inspected: true
+    inspected_paths:
+      - README.md
+      - docs/architecture.md
+      - docs/performance.md
+      - pyproject.toml
+      - pipersynth/__init__.py
+      - pipersynth/types.py
+      - pipersynth/voice.py
+      - pipersynth/voice_level.py
+      - tests/test_engine_public_api.py
+      - tests/test_engine_voice.py
+    observed_behavior:
+      Removes the document pipeline, planning, preparation, composition,
+      and former result APIs and runtime dependencies. The replacement PiperVoice surface
+      accepts prepared speakable text and leaves document-level responsibilities to
+      callers and downstream audio layers. Voice-level calibration is static and opt-in.
+    public_impact: public
+    decision: accepted
+    stale: false
+    evidence_subject: "feat: remove utterplan and audiocompose to simplify pipersynth"
+    target_entry_id: entry-0001
+    notes:
+      Coverage owner for the 0.2.0 migration entry; public callers must move preparation,
+      planning, and composition out of PiperSynth.
+  - sha: 09242788b1ceb8a8b299f1f4f8e9e52233e120ae
+    source_ref: git:09242788b1ceb8a8b299f1f4f8e9e52233e120ae
+    short_sha: 0924278
+    changed_paths:
+      - pyproject.toml
+    stats:
+      files_changed: 1
+      insertions: 1
+      deletions: 1
+    inspected: true
+    inspected_paths:
+      - pyproject.toml
+    observed_behavior:
+      Temporarily lowered the PiperG2P minimum from 0.1.7 to 0.1.6.
+      The later 7a6acb0 commit restores the final range floor to 0.1.7, so this has
+      no net dependency-floor effect in the release candidate.
+    public_impact: none
+    decision: internal
+    stale: false
+    evidence_subject: "chore: fix min version"
+    target_entry_id: entry-0002
+    notes:
+      Superseded packaging adjustment with no user-visible effect in the final
+      release tree; no public changelog entry is warranted.
+  - sha: 7a6acb03a1a505cda494966e3a98e3448bb7695e
+    source_ref: git:7a6acb03a1a505cda494966e3a98e3448bb7695e
+    short_sha: 7a6acb0
+    changed_paths:
+      - .ledger/releaseledger/data/ledgers/main/events/events.jsonl
+      - .ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0001.md
+      - .ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0002.md
+      - .ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0004.md
+      - .ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0005.md
+      - .ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0006.md
+      - .ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0007.md
+      - .ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0008.md
+      - .ledger/releaseledger/data/ledgers/main/releases/v0.1.3/entries/entry-0010.md
+      - README.md
+      - docs/architecture.md
+      - docs/changelog.md
+      - docs/performance.md
+      - examples/README.md
+      - examples/long_text.py
+      - pipersynth/__init__.py
+      - pipersynth/convenience.py
+      - pipersynth/types.py
+      - pipersynth/voice.py
+      - pyproject.toml
+      - tests/test_engine_public_api.py
+      - tests/test_engine_voice.py
+      - tests/test_examples_runner.py
+      - tests/test_onnxvoice_boundary.py
+      - tests/test_voice_leveling.py
+    stats:
+      files_changed: 25
+      insertions: 805
+      deletions: 178
+    inspected: true
+    inspected_paths:
+      - README.md
+      - docs/architecture.md
+      - docs/performance.md
+      - examples/long_text.py
+      - pipersynth/types.py
+      - pipersynth/voice.py
+      - pyproject.toml
+      - tests/test_engine_public_api.py
+      - tests/test_engine_voice.py
+    observed_behavior:
+      Adds request-local Phrasplit text splitting and the corresponding
+      dependency, but the subsequent a138121 commit replaces that behavior with atomic
+      synthesis requests and caller-owned boundaries. The final engine API does not
+      import or call Phrasplit; the candidate metadata cleanup is recorded in the implementation
+      task.
+    public_impact: public
+    decision: accepted
+    stale: false
+    evidence_subject: "feat: add phrasplit to handle long text input"
+    target_entry_id: entry-0001
+    notes:
+      Grouped with the later atomic-request behavior so the entry describes the
+      net public contract, not a superseded intermediate splitting feature.
+  - sha: a13812149614374affaf1867ef221b8b0c2704aa
+    source_ref: git:a13812149614374affaf1867ef221b8b0c2704aa
+    short_sha: a138121
+    changed_paths:
+      - .github/workflows/tests.yml
+      - README.md
+      - docs/architecture.md
+      - docs/performance.md
+      - docs/troubleshooting.md
+      - examples/long_text.py
+      - examples/stream.py
+      - pipersynth/__init__.py
+      - pipersynth/convenience.py
+      - pipersynth/errors.py
+      - pipersynth/types.py
+      - pipersynth/voice.py
+      - pipersynth/voice_level.py
+      - tests/test_engine_public_api.py
+      - tests/test_engine_types.py
+      - tests/test_engine_voice.py
+      - tests/test_integration.py
+      - tests/test_packaged_voice_calibration_data.py
+      - tests/test_voice_leveling.py
+      - tests/typecheck/engine_api.py
+    stats:
+      files_changed: 20
+      insertions: 1033
+      deletions: 763
+    inspected: true
+    inspected_paths:
+      - README.md
+      - docs/architecture.md
+      - docs/performance.md
+      - docs/troubleshooting.md
+      - pipersynth/__init__.py
+      - pipersynth/errors.py
+      - pipersynth/types.py
+      - pipersynth/voice.py
+      - tests/test_engine_public_api.py
+      - tests/test_engine_types.py
+      - tests/test_engine_voice.py
+    observed_behavior:
+      Replaces text-splitting and chunk-oriented synthesis with typed
+      SynthesisRequest and SynthesisResult APIs. Each request is phonemized as a whole
+      and sent through one model inference; known capacity overflow raises SynthesisInputTooLongError
+      instead of splitting or retrying. Caller owns request boundaries, and token annotations
+      including morph are forwarded.
+    public_impact: public
+    decision: accepted
+    stale: false
+    evidence_subject: "feat: provice API for atomic text senthesize"
+    target_entry_id: entry-0001
+    notes:
+      Coverage owner for the atomic prepared-text request behavior and its migration
+      guidance.

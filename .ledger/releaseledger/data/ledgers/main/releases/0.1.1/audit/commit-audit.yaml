@@ -1,0 +1,42 @@
+schema_version: 1
+object_type: commit_audit_sheet
+versioning:
+  schema_version: 1
+  revision: 3
+release_version: 0.1.1
+git_base_ref: v0.1.0
+git_base_sha: bcd5f9e81d119658e269802bd24ef840cf8b479d
+git_head_ref: v0.1.1
+git_head_sha: 5927e15315ccbcfdc337962637a53914337398a6
+git_range: bcd5f9e81d119658e269802bd24ef840cf8b479d..5927e15315ccbcfdc337962637a53914337398a6
+commit_count: 1
+rows:
+  - sha: 5927e15315ccbcfdc337962637a53914337398a6
+    source_ref: git:5927e15315ccbcfdc337962637a53914337398a6
+    short_sha: 5927e15
+    changed_paths:
+      - .gitignore
+      - pipersynth/__init__.py
+      - pipersynth/_version.py
+      - pipersynth/audio_job.py
+      - pyproject.toml
+    stats:
+      files_changed: 5
+      insertions: 19
+      deletions: 5
+    inspected: true
+    inspected_paths:
+      - .gitignore
+      - pipersynth/__init__.py
+      - pipersynth/_version.py
+      - pipersynth/audio_job.py
+      - pyproject.toml
+    observed_behavior:
+      Package versions now derive from SCM metadata and remain available
+      when the generated version module is absent.
+    public_impact: public
+    decision: accepted
+    stale: false
+    evidence_subject: "feat: dynamic versioning"
+    target_entry_id: entry-0001
+    notes: ""

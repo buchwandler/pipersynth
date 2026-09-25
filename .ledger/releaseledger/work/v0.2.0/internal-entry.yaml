@@ -1,0 +1,29 @@
+schema: releaseledger.entry-batch.v1
+operation: create
+schema_version: 1
+object_type: release_entry_batch
+release_version: v0.2.0
+git_base_ref: b45388ec48c7f4f89009c1e41d834a99672f7186
+git_base_sha: b45388ec48c7f4f89009c1e41d834a99672f7186
+git_head_ref: a13812149614374affaf1867ef221b8b0c2704aa
+git_head_sha: a13812149614374affaf1867ef221b8b0c2704aa
+include_merges: nontrivial
+entries:
+  - kind: internal
+    summary: Documented the superseded dependency-floor adjustment for release audit
+    body: >-
+      The temporary PiperG2P minimum-version change was reversed before the
+      v0.2.0 candidate. It has no net user-visible effect and is retained only
+      to account for the audited commit.
+    internal: true
+    status: accepted
+    source_refs:
+      - git:09242788b1ceb8a8b299f1f4f8e9e52233e120ae
+    paths:
+      - pyproject.toml
+    sources:
+      - git:09242788b1ceb8a8b299f1f4f8e9e52233e120ae
+    prs: []
+    issues: []
+    contributors:
+      - "@holgern"

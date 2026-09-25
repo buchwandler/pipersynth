@@ -45,6 +45,29 @@ def load_policy(path: Path = POLICY_PATH) -> dict[str, Any]:
             raise ValueError(f"policy {name} must be finite")
     if policy["min_gain_db"] > policy["max_gain_db"] or policy["max_mad_lu"] < 0:
         raise ValueError("voice-level policy limits are invalid")
+    identity_overrides = policy.get("identity_overrides", {})
+    if not isinstance(identity_overrides, Mapping):
+        raise ValueError("policy identity_overrides must be an object")
+    for calibration_key, override in identity_overrides.items():
+        if not isinstance(calibration_key, str) or not isinstance(override, Mapping):
+            raise ValueError("policy identity overrides must map calibration keys to objects")
+        try:
+            VoiceCalibrationKey.parse(calibration_key)
+        except ValueError as error:
+            raise ValueError(f"invalid policy identity override key: {calibration_key}") from error
+        minimum_gain_db = override.get("min_gain_db")
+        if (
+            isinstance(minimum_gain_db, bool)
+            or not isinstance(minimum_gain_db, (int, float))
+            or not math.isfinite(minimum_gain_db)
+            or minimum_gain_db > policy["max_gain_db"]
+        ):
+            raise ValueError(
+                f"policy identity override for {calibration_key} has invalid min_gain_db"
+            )
+        rationale = override.get("rationale")
+        if not isinstance(rationale, str) or not rationale.strip():
+            raise ValueError(f"policy identity override for {calibration_key} needs a rationale")
     return policy
 
 
@@ -172,7 +195,7 @@ def aggregate_measurements(
         groups[str(measurement["calibration_key"])].append(measurement)
 
     aggregates = []
-    for _key, rows in sorted(groups.items()):
+    for calibration_key, rows in sorted(groups.items()):
         values = [float(row["integrated_lufs"]) for row in rows]
         median_lufs = statistics.median(values)
         mad_lu = statistics.median(abs(value - median_lufs) for value in values)
@@ -183,10 +206,16 @@ def aggregate_measurements(
             status = "high_variability"
         else:
             status = "eligible"
+        identity_override = policy.get("identity_overrides", {}).get(calibration_key)
+        minimum_gain_db = (
+            float(identity_override["min_gain_db"])
+            if identity_override is not None
+            else float(policy["min_gain_db"])
+        )
         requested_gain = float(policy["reference_lufs"]) - median_lufs
         gain_db = min(
             float(policy["max_gain_db"]),
-            max(float(policy["min_gain_db"]), requested_gain),
+            max(minimum_gain_db, requested_gain),
         )
         identity = rows[0]
         aggregates.append(

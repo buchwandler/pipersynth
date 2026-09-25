@@ -1,6 +1,7 @@
 name: Run tests
 on:
   push:
+  pull_request:
   workflow_call:
 jobs:
   run:
@@ -17,7 +18,7 @@ jobs:
         python-version: ${{ matrix.python-version }}
     - name: Install packages
       run: |
-        pip install pytest ruff mypy
+        pip install pytest "ruff>=0.16,<0.17" mypy
         pip install -e ".[cpu,dev]"
         python -m compileall -q pipersynth tests
     - name: Type-check public API
