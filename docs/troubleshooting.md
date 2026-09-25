@@ -22,12 +22,16 @@ Speaker names and numeric IDs must belong to the active Piper model. `None` sele
 
 ## Pronunciation override or annotation offsets fail
 
-Offsets use Python half-open ranges into the exact prepared string stored in `SynthesisSegment.text`. Do not reuse offsets from an unprepared source document. If `LinguisticToken.text` is supplied, it must equal the source slice.
+Offsets use Python half-open ranges into the exact prepared string stored in `SynthesisRequest.text`. Do not reuse offsets from an unprepared source document. If `LinguisticToken.text` is supplied, it must equal the source slice.
 
 ## Text is pronounced differently than expected
 
 PiperSynth accepts prepared, speakable text. It does not expand numbers, dates, abbreviations, SSMD, or written-to-spoken semantics. Perform that preparation in the caller, then pass the resulting text and any source-aligned pronunciation context.
 
+## Oversized requests
+
+PiperSynth never splits or retries an oversized request. `SynthesisInputTooLongError` exposes `text_length`, `phoneme_count`, `max_phonemes`, and `model_id` when known. It only reports a limit supplied by the active model or frontend. Readio or the caller must select the next boundary.
+
 ## WAV output
 
-Rendered audio is mono finite `float32` at the active model's sample rate. `RenderedSegment.save_wav()` writes mono 16-bit PCM. Use `output_gain` only for explicit engine-local gain. Final loudness, peak, and timeline policies belong to the caller.
+Synthesis results contain mono finite `float32` audio at the active model's sample rate. `SynthesisResult.save_wav()` writes mono 16-bit PCM. Use `output_gain` only for explicit engine-local gain. Final loudness, peak, and timeline policies belong to the caller.

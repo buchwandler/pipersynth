@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -98,6 +99,8 @@ class VoiceCalibrationCatalog:
     generated_with: Mapping[str, str]
     voices: Mapping[VoiceCalibrationKey, VoiceLevelCalibration]
 
+    revision: str | None = None
+
 
 VoiceLevelSource = Literal["off", "override", "catalog", "missing_identity", "missing_calibration"]
 
@@ -108,6 +111,14 @@ class VoiceLevelApplication:
     gain_db: float
     source: VoiceLevelSource
     key: VoiceCalibrationKey | None
+
+    mode: VoiceLevelMode = "off"
+    catalog_revision: str | None = None
+    reason: str = ""
+
+    @property
+    def calibration_key(self) -> VoiceCalibrationKey | None:
+        return self.key
 
 
 def _finite(value: Any, name: str) -> float:
@@ -188,6 +199,14 @@ def _validate_catalog(raw: Any) -> VoiceCalibrationCatalog:
         voices[key] = _validate_record(key, record)
     return VoiceCalibrationCatalog(
         schema=_SUPPORTED_SCHEMA,
+        revision=hashlib.sha256(
+            json.dumps(
+                raw,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest(),
         method=_SUPPORTED_METHOD,
         corpus=corpus,
         reference_lufs=_finite(raw.get("reference_lufs"), "reference_lufs"),
@@ -226,8 +245,8 @@ def apply_voice_level_calibration(
     catalog: VoiceCalibrationCatalog | None = None,
 ) -> tuple[np.ndarray, VoiceLevelApplication]:
     """Apply one deterministic static gain; never measure the waveform."""
-
     result = np.asarray(audio, dtype=np.float32)
+    catalog_revision = None
     if config.gain_db is not None:
         gain = float(config.gain_db)
         source: VoiceLevelSource = "override"
@@ -238,7 +257,9 @@ def apply_voice_level_calibration(
         gain = 0.0
         source = "missing_identity"
     else:
-        selected = (catalog or default_voice_calibration()).voices.get(key)
+        selected_catalog = catalog or default_voice_calibration()
+        catalog_revision = selected_catalog.revision
+        selected = selected_catalog.voices.get(key)
         if selected is None:
             gain = 0.0
             source = "missing_calibration"
@@ -249,7 +270,23 @@ def apply_voice_level_calibration(
         result = np.asarray(audiosig.apply_gain_db(result, gain, clip=False), dtype=np.float32)
     else:
         result = result.copy()
-    return result, VoiceLevelApplication(bool(gain), gain, source, key)
+    reasons = {
+        "off": "voice-level calibration is disabled",
+        "override": "an explicit gain_db override was selected",
+        "catalog": "a matching packaged or supplied calibration was selected",
+        "missing_identity": "the voice has no stable calibration identity",
+        "missing_calibration": "no calibration entry matches this voice",
+    }
+    application = VoiceLevelApplication(
+        bool(gain),
+        gain,
+        source,
+        key,
+        config.mode,
+        catalog_revision,
+        reasons[source],
+    )
+    return result, application
 
 
 __all__ = [

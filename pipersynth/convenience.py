@@ -9,9 +9,10 @@ from typing import Any
 from piperg2p import get_g2p
 
 from .asset_progress import AssetProgressEvent
+from .audio import write_wav
 from .errors import InvalidSynthesisConfigError
 from .session import ProviderConfig, ProviderSpec
-from .types import RenderedSegment, SynthesisConfig, TextChunkingConfig
+from .types import SynthesisConfig, SynthesisResult
 from .voice import PiperVoice
 from .voice_level import VoiceLevelConfig
 
@@ -48,13 +49,12 @@ def _render_prepared_text(
     session_options: Any | None,
     g2p_factory: Callable[..., Any],
     g2p_options: dict[str, Any] | None,
-    chunking: TextChunkingConfig | None,
     cache_dir: str | Path | None,
     offline: bool | None,
     refresh_catalog: bool,
     force_download: bool,
     progress: Callable[[AssetProgressEvent], None] | None,
-) -> RenderedSegment:
+) -> SynthesisResult:
     if not isinstance(prepared_text, str):
         raise TypeError("prepared_text must be a string")
     if not isinstance(voice, str) or not voice:
@@ -80,7 +80,6 @@ def _render_prepared_text(
             id=id,
             speaker=speaker,
             config=config,
-            chunking=chunking,
         )
 
 
@@ -102,13 +101,12 @@ def synthesize(
     session_options: Any | None = None,
     g2p_factory: Callable[..., Any] = get_g2p,
     g2p_options: dict[str, Any] | None = None,
-    chunking: TextChunkingConfig | None = None,
     cache_dir: str | Path | None = None,
     offline: bool | None = None,
     refresh_catalog: bool = False,
     force_download: bool = False,
     progress: Callable[[AssetProgressEvent], None] | None = None,
-) -> RenderedSegment:
+) -> SynthesisResult:
     """Synthesize prepared speakable text with one managed PiperVoice."""
     config = _synthesis_config(
         length_scale=length_scale,
@@ -130,7 +128,6 @@ def synthesize(
         session_options=session_options,
         g2p_factory=g2p_factory,
         g2p_options=g2p_options,
-        chunking=chunking,
         cache_dir=cache_dir,
         offline=offline,
         refresh_catalog=refresh_catalog,
@@ -139,7 +136,7 @@ def synthesize(
     )
 
 
-def _save_wav_atomically(result: RenderedSegment, destination: Path) -> None:
+def _save_wav_atomically(result: SynthesisResult, destination: Path) -> None:
     if destination.exists() and destination.is_dir():
         raise ValueError(f"output path is a directory: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -149,7 +146,7 @@ def _save_wav_atomically(result: RenderedSegment, destination: Path) -> None:
     os.close(descriptor)
     temporary = Path(temporary_name)
     try:
-        result.save_wav(temporary)
+        write_wav(temporary, result.audio, result.sample_rate)
         with temporary.open("rb+") as handle:
             os.fsync(handle.fileno())
         temporary.replace(destination)
@@ -176,7 +173,6 @@ def synthesize_to_wav(
     session_options: Any | None = None,
     g2p_factory: Callable[..., Any] = get_g2p,
     g2p_options: dict[str, Any] | None = None,
-    chunking: TextChunkingConfig | None = None,
     cache_dir: str | Path | None = None,
     offline: bool | None = None,
     refresh_catalog: bool = False,
@@ -204,7 +200,6 @@ def synthesize_to_wav(
         session_options=session_options,
         g2p_factory=g2p_factory,
         g2p_options=g2p_options,
-        chunking=chunking,
         cache_dir=cache_dir,
         offline=offline,
         refresh_catalog=refresh_catalog,

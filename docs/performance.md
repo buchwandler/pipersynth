@@ -11,11 +11,11 @@ with PiperVoice.from_pretrained("en_US-lessac-medium") as voice:
     second = voice.synthesize_text("Second prepared request.", language="en-us")
 ```
 
-`iter_chunks()` first derives prepared-text parts with Phrasplit's exact offsets in regex mode, then phonemizes and infers each part incrementally. PiperG2P still owns its sentence groups, so one text part can yield multiple rendered chunks. `synthesize()` joins them in source order without adding silence.
+A single atomic request is phonemized once and sent through one acoustic inference. PiperG2P may represent frontend sentence groups internally, but PiperSynth joins their phoneme IDs and does not expose or infer each group independently.
 
-`TextChunkingConfig` defaults to sentence splitting and accepts `max_chars` for long or run-on text. Chunk metadata identifies the exact `[char_start, char_end)` slice of the original prepared request, and the result summary reports the splitter diagnostics and number of text parts. Overrides, annotations, and raw phoneme blocks protect their complete spans; merging can make a part longer than the requested character limit. Use `mode="none"` to skip PiperSynth splitting while retaining PiperG2P sentence groups.
+PiperSynth does not split long or run-on requests. If the model or frontend reports a known capacity, PiperSynth raises `SynthesisInputTooLongError` with the available capacity details. No universal character or phoneme limit is assumed. The caller, usually Readio, chooses any smaller request boundaries before synthesis.
 
-These are synthesis-engine chunks, not semantic pauses or document timeline segments. Use caller-side streaming or AudioCompose when a larger application needs document-level composition.
+These are engine requests, not semantic pauses or document timeline segments. Use caller-side streaming or AudioCompose when a larger application needs document-level composition.
 
 ## Static voice-level calibration
 

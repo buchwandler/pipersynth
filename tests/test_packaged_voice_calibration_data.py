@@ -27,6 +27,8 @@ FAILED_KEYS = {
 def test_packaged_catalog_has_complete_measured_data() -> None:
     catalog = default_voice_calibration()
     assert catalog.schema == 1
+    assert isinstance(catalog.revision, str)
+    assert len(catalog.revision) == 64
     assert catalog.method == "bs1770"
     assert catalog.corpus == "pipersynth-count-1-to-10-v1"
     assert catalog.reference_lufs == -24.0
@@ -68,6 +70,9 @@ def test_runtime_lookup_uses_catalog_and_explicit_gain_override() -> None:
         audio, VoiceLevelConfig(mode="calibrated"), key
     )
     assert application.source == "catalog"
+    assert application.mode == "calibrated"
+    assert application.catalog_revision == catalog.revision
+    assert "matching" in application.reason
     assert application.key == key
     assert application.gain_db == record.gain_db
     np.testing.assert_allclose(leveled, audio * 10 ** (record.gain_db / 20))
@@ -76,12 +81,18 @@ def test_runtime_lookup_uses_catalog_and_explicit_gain_override() -> None:
         audio, VoiceLevelConfig(mode="calibrated", gain_db=-1.0), key
     )
     assert application.source == "override"
+    assert application.mode == "calibrated"
+    assert application.catalog_revision is None
+    assert "explicit" in application.reason
     assert application.gain_db == -1.0
     np.testing.assert_allclose(overridden, audio * 10 ** (-1.0 / 20))
 
     unchanged, application = apply_voice_level_calibration(audio, VoiceLevelConfig(), key)
     assert application.source == "off"
     assert application.gain_db == 0.0
+    assert application.mode == "off"
+    assert application.mode == "off"
+    assert application.reason == "voice-level calibration is disabled"
     np.testing.assert_array_equal(unchanged, audio)
 
 
@@ -91,7 +102,12 @@ def test_missing_catalog_identity_leaves_audio_unchanged() -> None:
     result, application = apply_voice_level_calibration(
         audio, VoiceLevelConfig(mode="calibrated"), key
     )
+    assert application.mode == "calibrated"
+    assert application.reason == "no calibration entry matches this voice"
+    assert application.catalog_revision is not None
     assert application.source == "missing_calibration"
+    assert application.catalog_revision is not None
+    assert "no calibration" in application.reason
     assert application.gain_db == 0.0
     assert application.key == key
     np.testing.assert_array_equal(result, audio)

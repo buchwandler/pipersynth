@@ -19,7 +19,8 @@ def test_real_voice_smoke_when_asset_is_configured() -> None:
     language = os.environ.get("PIPERSYNTH_VOICE_LANGUAGE", "en-us")
     with PiperVoice.from_local(Path(model)) as voice:
         result = voice.synthesize_text("Hello world.", language=language)
-    assert result.chunks
+    assert result.word_timings == ()
+    assert result.supports_timestamps is False
     assert result.audio.dtype == np.float32
     assert result.audio.ndim == 1
     assert np.all(np.isfinite(result.audio))

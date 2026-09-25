@@ -10,13 +10,21 @@ import pytest
 from piperg2p import PhonemeSentence, VoiceConfig
 
 import pipersynth.voice as voice_module
-from pipersynth import PiperVoice, TextChunkingConfig
-from pipersynth.errors import InvalidSynthesisConfigError
-from pipersynth.types import (
+from pipersynth import (
+    InvalidLanguageError,
+    InvalidRequestError,
+    InvalidSpeakerError,
     LinguisticToken,
+    ModelFileNotFoundError,
+    ModelInferenceError,
+    PiperVoice,
     PronunciationOverride,
     SynthesisConfig,
-    SynthesisSegment,
+    SynthesisInputTooLongError,
+    SynthesisRequest,
+    SynthesisResult,
+    VoiceClosedError,
+    VoiceLevelConfig,
 )
 
 
@@ -65,14 +73,14 @@ class FakeG2P:
         return self.result
 
 
-def test_synthesize_forwards_offsets_and_infers_each_nonempty_sentence() -> None:
+def test_synthesize_passes_exact_request_to_g2p_and_runs_one_inference() -> None:
     runtime = FakeRuntime()
-    fake_g2p = FakeG2P()
+    g2p = FakeG2P()
     factory_calls: list[tuple[str, Any, dict[str, Any]]] = []
 
     def make_g2p(language: str, *, config: Any, **options: Any) -> FakeG2P:
         factory_calls.append((language, config, options))
-        return fake_g2p
+        return g2p
 
     voice = PiperVoice(
         runtime,
@@ -80,15 +88,15 @@ def test_synthesize_forwards_offsets_and_infers_each_nonempty_sentence() -> None
         g2p_factory=make_g2p,
         g2p_options={"use_cli": True},
     )
-    segment = SynthesisSegment(
+    request = SynthesisRequest(
         id="line-17",
-        text="ab ab",
+        text="ab! ab?",
         language="en-us",
         speaker="alice",
         pronunciation_overrides=(
-            PronunciationOverride(3, 5, phonemes="b", language="de-de", stress="2"),
+            PronunciationOverride(4, 6, phonemes="b", language="de-de", stress="2"),
         ),
-        annotations=(
+        tokens=(
             LinguisticToken(
                 0,
                 2,
@@ -102,7 +110,7 @@ def test_synthesize_forwards_offsets_and_infers_each_nonempty_sentence() -> None
         ),
     )
     result = voice.synthesize(
-        segment,
+        request,
         config=SynthesisConfig(
             length_scale=0.8,
             noise_scale=0.2,
@@ -112,267 +120,136 @@ def test_synthesize_forwards_offsets_and_infers_each_nonempty_sentence() -> None
         ),
     )
 
+    assert isinstance(result, SynthesisResult)
     assert result.id == "line-17"
-    assert result.audio.tolist() == pytest.approx([0.1, -0.2, 0.1, -0.2])
-    assert result.phonemes == ("a", "b")
-    assert result.phoneme_ids == (3, 4)
+    assert result.text == request.text
+    assert result.language == "en-us"
+    assert result.audio.tolist() == pytest.approx([0.1, -0.2])
+    assert result.audio.dtype == np.float32
+    assert result.word_timings == ()
+    assert result.supports_timestamps is False
+    assert result.metadata["phonemes"] == ("a", "b")
+    assert result.metadata["phoneme_ids"] == (3, 4)
     assert result.warnings == ("frontend warning", "first sentence", "last sentence")
-    assert [chunk.segment_id for chunk in result.chunks] == ["line-17", "line-17"]
-    assert [chunk.index for chunk in result.chunks] == [0, 1]
-    assert [call[0] for call in runtime.calls] == [(3,), (4,)]
-    assert all(call[1]["speaker_id"] == 1 for call in runtime.calls)
-    assert all(call[1]["length_scale"] == 0.8 for call in runtime.calls)
-    assert all(call[1]["noise_scale"] == 0.2 for call in runtime.calls)
-    assert all(call[1]["noise_w"] == 0.3 for call in runtime.calls)
-
-    overrides = fake_g2p.calls[0][1]["overrides"]
-    assert overrides[0].char_start == 3
-    assert overrides[0].char_end == 5
-    assert dict(overrides[0].attrs) == {"ph": "b", "lang": "de-de", "stress": 2}
-    annotations = fake_g2p.calls[0][1]["annotations"]
-    assert annotations[0].morph == "Number=Sing"
-    assert annotations[0].text == "ab"
-    assert (annotations[0].start, annotations[0].end) == (0, 2)
-    assert annotations[0].pos == "NOUN"
-    assert annotations[0].tag == "NN"
-    assert annotations[0].lemma == "ab"
-    assert annotations[0].language == "en-us"
-    assert result.diagnostics is not None
-    assert result.diagnostics.frontend == "fake"
+    assert g2p.calls[0][0] == request.text
+    assert len(g2p.calls) == 1
+    assert len(runtime.calls) == 1
+    assert runtime.calls[0][0] == (3, 4)
+    assert runtime.calls[0][1] == {
+        "speaker_id": 1,
+        "length_scale": 0.8,
+        "noise_scale": 0.2,
+        "noise_w": 0.3,
+    }
+    override = g2p.calls[0][1]["overrides"][0]
+    assert (override.char_start, override.char_end) == (4, 6)
+    assert dict(override.attrs) == {"ph": "b", "lang": "de-de", "stress": 2}
+    annotation = g2p.calls[0][1]["annotations"][0]
+    assert annotation.morph == "Number=Sing"
+    assert annotation.text == "ab"
+    assert annotation.pos == "NOUN"
+    assert annotation.tag == "NN"
+    assert annotation.lemma == "ab"
+    assert annotation.language == "en-us"
+    assert (annotation.start, annotation.end) == (0, 2)
     assert factory_calls == [("en-us", voice.config, {"use_cli": True})]
 
 
-def test_iter_chunks_yields_only_inferable_groups() -> None:
-    runtime = FakeRuntime()
-    voice = PiperVoice(runtime, voice_config())
-    sentence_result = SimpleNamespace(
-        sentences=(PhonemeSentence((), ()), PhonemeSentence(("a",), (3,))),
-        warnings=(),
-        diagnostics=None,
-    )
-    voice._phonemize_segment = lambda segment: sentence_result  # type: ignore[method-assign]
-    segment = SynthesisSegment("id", "a", "en-us")
+def test_synthesize_text_is_strict_and_does_not_import_phrasplit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import builtins
 
-    chunks = tuple(voice.iter_chunks(segment))
+    original_import = builtins.__import__
 
-    assert len(chunks) == 1
-    assert chunks[0].index == 0
-    assert chunks[0].segment_id == "id"
-    assert len(runtime.calls) == 1
+    def block_phrasplit(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name.partition(".")[0] == "phrasplit":
+            raise AssertionError("strict synthesis must not import Phrasplit")
+        return original_import(name, *args, **kwargs)
 
-
-def test_sentence_chunking_uses_regex_spans_and_preserves_request_audio(monkeypatch) -> None:
-    import phrasplit
-
-    original_split = phrasplit.split_with_offsets_with_diagnostics
-    split_calls: list[tuple[str, dict[str, Any]]] = []
-
-    def record_split(text: str, **options: Any) -> Any:
-        split_calls.append((text, options))
-        return original_split(text, **options)
-
-    monkeypatch.setattr(phrasplit, "split_with_offsets_with_diagnostics", record_split)
-
+    monkeypatch.setattr(builtins, "__import__", block_phrasplit)
     runtime = FakeRuntime()
     g2p = FakeG2P()
-    voice = PiperVoice(
-        runtime,
-        voice_config(),
-        g2p_factory=lambda language, *, config: g2p,
-    )
-    text = "Dr. Smith measured 3.14 volts. The U.S. team left.\n\nFinal sentence."
-    result = voice.synthesize(
-        SynthesisSegment("long", text, "en-us"),
-        config=SynthesisConfig(normalize_audio=False),
-    )
+    voice = PiperVoice(runtime, voice_config(), g2p_factory=lambda language, *, config: g2p)
+    text = "Dr. Smith measured 3.14 volts. The U.S. team left. Final sentence."
 
-    ranges = list(
-        dict.fromkeys(
-            (
-                chunk.metadata["text_chunk"]["char_start"],
-                chunk.metadata["text_chunk"]["char_end"],
-            )
-            for chunk in result.chunks
-        )
-    )
-    parts = [text[start:end] for start, end in ranges]
-    assert len(parts) == 3
-    assert "".join(parts) == text
-    assert [call[0] for call in g2p.calls] == parts
-    assert split_calls == [
-        (
-            text,
-            {
-                "mode": "sentence",
-                "use_spacy": False,
-                "language": "en-us",
-                "max_chars": None,
-            },
-        )
-    ]
-    assert [chunk.index for chunk in result.chunks] == list(range(6))
-    assert result.audio.tolist() == pytest.approx([0.2, -0.4] * 6)
+    result = voice.synthesize_text(text, language="en-us", id="prepared")
+
     assert result.text == text
-    assert result.metadata["text_chunking"] == {
-        "mode": "sentence",
-        "backend": "phrasplit-regex",
-        "diagnostics": {
-            "backend": "regex",
-            "language": "en",
-            "analysis_source": "regex",
-            "model_owned_by_caller": False,
-        },
-        "input_chars": len(text),
-        "text_parts": 3,
-        "rendered_chunks": 6,
-        "max_chars": None,
-    }
-    assert all(
-        chunk.metadata["text_chunk"]["split_backend"] == "phrasplit-regex"
-        for chunk in result.chunks
-    )
+    assert [call[0] for call in g2p.calls] == [text]
+    assert [call[0] for call in runtime.calls] == [(3, 4)]
 
 
-def test_max_chars_splits_run_on_prepared_text_and_retains_offsets() -> None:
-    text = "alpha beta gamma delta epsilon zeta eta theta"
-    g2p = FakeG2P()
-    voice = PiperVoice(
-        FakeRuntime(),
-        voice_config(),
-        g2p_factory=lambda language, *, config: g2p,
-    )
-
-    result = voice.synthesize(
-        SynthesisSegment("run-on", text, "en-us"),
-        config=SynthesisConfig(normalize_audio=False),
-        chunking=TextChunkingConfig(max_chars=10),
-    )
-
-    ranges = list(
-        dict.fromkeys(
-            (
-                chunk.metadata["text_chunk"]["char_start"],
-                chunk.metadata["text_chunk"]["char_end"],
-            )
-            for chunk in result.chunks
-        )
-    )
-    parts = [text[start:end] for start, end in ranges]
-    assert len(parts) > 1
-    assert all(len(part) <= 10 for part in parts)
-    assert "".join(parts) == text
-    assert [call[0] for call in g2p.calls] == parts
-    assert result.metadata["text_chunking"]["max_chars"] == 10
-
-
-def test_protected_spans_merge_boundaries_and_remap_offsets() -> None:
-    text = "First. Second. Last."
-    last_start = text.index("Last")
-    segment = SynthesisSegment(
-        "protected",
-        text,
-        "en-us",
-        pronunciation_overrides=(
-            PronunciationOverride(4, 9, phonemes="a"),
-            PronunciationOverride(last_start, last_start + 4, phonemes="b"),
-        ),
-        annotations=(LinguisticToken(last_start, last_start + 4, text="Last"),),
-    )
-    g2p = FakeG2P()
-    voice = PiperVoice(
-        FakeRuntime(),
-        voice_config(),
-        g2p_factory=lambda language, *, config: g2p,
-    )
-
-    result = voice.synthesize(segment, config=SynthesisConfig(normalize_audio=False))
-
-    assert [call[0] for call in g2p.calls] == ["First. Second.", " Last."]
-    first_override = g2p.calls[0][1]["overrides"][0]
-    assert (first_override.char_start, first_override.char_end) == (4, 9)
-    last_override = g2p.calls[1][1]["overrides"][0]
-    assert (last_override.char_start, last_override.char_end) == (1, 5)
-    annotation = g2p.calls[1][1]["annotations"][0]
-    assert (annotation.start, annotation.end, annotation.text) == (1, 5, "Last")
-    assert [chunk.index for chunk in result.chunks] == [0, 1, 2, 3]
-    assert result.warnings == (
-        "frontend warning",
-        "first sentence",
-        "last sentence",
-    )
-    assert result.audio.size == len(result.chunks) * 2
-
-
-def test_raw_phoneme_blocks_are_never_split() -> None:
-    text = "First. [[Dr. A. B.]] Last."
-    g2p = FakeG2P()
-    voice = PiperVoice(
-        FakeRuntime(),
-        voice_config(),
-        g2p_factory=lambda language, *, config: g2p,
-    )
-
-    result = voice.synthesize(
-        SynthesisSegment("raw", text, "en-us"),
-        config=SynthesisConfig(normalize_audio=False),
-    )
-
-    parts = [call[0] for call in g2p.calls]
-    raw_start = text.index("[[")
-    raw_end = text.index("]]", raw_start) + 2
-    assert len(parts) == 2
-    assert "".join(parts) == text
-    ranges = [chunk.metadata["text_chunk"] for chunk in result.chunks]
-    assert any(item["char_start"] <= raw_start and item["char_end"] >= raw_end for item in ranges)
-
-
-def test_language_must_match_active_espeak_voice_without_span_routing() -> None:
-    voice = PiperVoice(FakeRuntime(), voice_config(phoneme_type="espeak"))
-    segment = SynthesisSegment("id", "hello", "de-de")
-    with pytest.raises(InvalidSynthesisConfigError, match="incompatible"):
-        voice.synthesize(segment)
-
-
-def test_synthesize_ids_keeps_low_level_inference_controls() -> None:
+def test_known_capacity_rejects_whole_request_before_inference() -> None:
     runtime = FakeRuntime()
-    voice = PiperVoice(runtime, voice_config(3))
-    audio = voice.synthesize_ids(
-        [3, 4],
-        SynthesisConfig(
-            length_scale=0.75,
-            noise_scale=0.4,
-            noise_w_scale=0.6,
-            normalize_audio=False,
-            output_gain=0.5,
-        ),
-        speaker=2,
-    )
-    assert audio.tolist() == pytest.approx([0.1, -0.2])
-    assert runtime.calls[0][1]["speaker_id"] == 2
-    assert runtime.calls[0][1]["length_scale"] == 0.75
-    assert runtime.calls[0][1]["noise_scale"] == 0.4
-    assert runtime.calls[0][1]["noise_w"] == 0.6
-
-
-def test_synthesize_text_passes_prepared_text_and_requested_speaker() -> None:
-    runtime = FakeRuntime()
-    fake_g2p = FakeG2P()
+    runtime.max_phonemes = 1
     voice = PiperVoice(
         runtime,
-        voice_config(3),
-        g2p_factory=lambda language, *, config: fake_g2p,
+        voice_config(),
+        g2p_factory=lambda language, *, config: FakeG2P(),
     )
 
-    result = voice.synthesize_text(
-        "Already prepared.", language="en-us", id="prepared-1", speaker="alice"
+    with pytest.raises(SynthesisInputTooLongError) as caught:
+        voice.synthesize(SynthesisRequest("long", "long text", "en-us"))
+
+    assert caught.value.text_length == len("long text")
+    assert caught.value.phoneme_count == 2
+    assert caught.value.max_phonemes == 1
+    assert runtime.calls == []
+
+
+def test_unknown_capacity_does_not_invent_a_limit_or_split() -> None:
+    runtime = FakeRuntime()
+    voice = PiperVoice(
+        runtime,
+        voice_config(),
+        g2p_factory=lambda language, *, config: FakeG2P(),
     )
 
-    assert result.id == "prepared-1"
-    assert result.text == "Already prepared."
-    assert fake_g2p.calls[0][0] == "Already prepared."
-    assert result.diagnostics is not None
-    assert result.diagnostics.frontend == "fake"
-    assert runtime.calls[0][1]["speaker_id"] == 1
+    result = voice.synthesize_text("A long request. More words.", language="en-us")
+
+    assert result.audio.size == 2
+    assert len(runtime.calls) == 1
+    assert runtime.calls[0][0] == (3, 4)
+
+
+def test_incompatible_model_language_is_typed() -> None:
+    voice = PiperVoice(FakeRuntime(), voice_config(phoneme_type="espeak"))
+
+    with pytest.raises(InvalidLanguageError, match="incompatible"):
+        voice.synthesize(SynthesisRequest("id", "hello", "de-de"))
+
+
+def test_g2p_and_backend_errors_are_translated_to_typed_errors() -> None:
+    voice = PiperVoice(
+        FakeRuntime(),
+        voice_config(),
+        g2p_factory=lambda language, *, config: SimpleNamespace(
+            phonemize_prepared=lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("raw"))
+        ),
+    )
+    with pytest.raises(InvalidRequestError, match="PiperG2P") as g2p_error:
+        voice.synthesize(SynthesisRequest("id", "hello", "en-us"))
+    assert isinstance(g2p_error.value.__cause__, ValueError)
+
+    class BrokenRuntime(FakeRuntime):
+        def infer(self, ids: list[int], **kwargs: Any) -> Any:
+            raise RuntimeError("backend details")
+
+    broken = PiperVoice(
+        BrokenRuntime(),
+        voice_config(),
+        g2p_factory=lambda language, *, config: FakeG2P(),
+    )
+    with pytest.raises(ModelInferenceError, match="inference failed"):
+        broken.synthesize(SynthesisRequest("id", "hello", "en-us"))
+
+
+def test_synthesize_rejects_non_request_values() -> None:
+    voice = PiperVoice(FakeRuntime(), voice_config())
+
+    with pytest.raises(InvalidRequestError):
+        voice.synthesize("not a request")  # type: ignore[arg-type]
 
 
 def test_local_voice_opens_through_onnxvoice(
@@ -385,78 +262,148 @@ def test_local_voice_opens_through_onnxvoice(
     runtime = FakeRuntime()
     opened: dict[str, Any] = {}
 
-    def open_local(model_path, config_file, **kwargs):
+    def open_local(model_path: Path, config_file: Path, **kwargs: Any) -> FakeRuntime:
         opened.update(model_path=model_path, config_path=config_file, options=kwargs)
         return runtime
 
     monkeypatch.setattr(voice_module, "open_local_voice", open_local)
-    fake_g2p = FakeG2P()
-    factory_calls: list[tuple[str, Any, dict[str, Any]]] = []
-
-    def make_g2p(language: str, *, config: Any, **options: Any) -> FakeG2P:
-        factory_calls.append((language, config, options))
-        return fake_g2p
-
+    g2p = FakeG2P()
     voice = PiperVoice.from_local(
         model,
-        g2p_factory=make_g2p,
+        g2p_factory=lambda language, *, config, **options: g2p,
         g2p_options={"use_cli": True},
     )
 
     assert voice.runtime is runtime
     assert voice.model_path == model
     assert voice.config_path == config_path
-    assert not hasattr(voice, "frontend")
-    assert factory_calls == []
-    assert opened == {
-        "model_path": model,
-        "config_path": config_path,
-        "options": {"providers": None, "provider_options": None, "session_options": None},
+    assert opened["options"] == {
+        "providers": None,
+        "provider_options": None,
+        "session_options": None,
     }
     result = voice.synthesize_text("Loaded prepared text.", language="en-us")
-    assert fake_g2p.calls[0][0] == "Loaded prepared text."
-    assert factory_calls == [("en-us", voice.config, {"use_cli": True})]
-    assert result.diagnostics is not None
-    assert result.diagnostics.frontend == "fake"
+    assert result.text == "Loaded prepared text."
+    assert g2p.calls[0][0] == "Loaded prepared text."
     voice.close()
 
 
-def test_runtime_summaries_are_kept_as_engine_diagnostics() -> None:
-    class Runtime(FakeRuntime):
-        def infer(self, ids: list[int], **kwargs: Any) -> Any:
-            self.calls.append((tuple(ids), kwargs))
-            return SimpleNamespace(
-                audio=np.array([0.2, -0.4], dtype=np.float32),
-                sample_rate=22050,
-                timings=np.zeros((1, 2), dtype=np.float32),
-                outputs={"duration": np.zeros((1, 2), dtype=np.float32)},
-            )
+def test_closed_voice_raises_typed_error() -> None:
+    voice = PiperVoice(FakeRuntime(), voice_config())
+    voice.close()
 
-    voice = PiperVoice(Runtime(), voice_config())
-    voice._phonemize_segment = lambda segment: SimpleNamespace(
-        sentences=(PhonemeSentence(("a",), (3,)),), warnings=(), diagnostics=None
-    )  # type: ignore[method-assign]
-
-    result = voice.synthesize(SynthesisSegment("id", "a", "en-us"))
-
-    assert result.chunks[0].metadata["inference_timing"] == {"shape": [1, 2], "dtype": "float32"}
-    assert result.chunks[0].metadata["inference_output"] == {
-        "duration": {"shape": [1, 2], "dtype": "float32"}
-    }
+    with pytest.raises(VoiceClosedError):
+        voice.synthesize_text("hello", language="en-us")
 
 
-def test_speaker_names_ids_and_default_are_resolved_within_active_voice() -> None:
+def test_speaker_names_ids_defaults_and_invalid_values() -> None:
     voice = PiperVoice(FakeRuntime(), voice_config(3))
     assert voice.resolve_speaker_id("alice") == 1
     assert voice.resolve_speaker_id(2) == 2
     assert voice.resolve_speaker_id(None) == 2
-
-
-def test_invalid_speakers_are_rejected() -> None:
-    from pipersynth.errors import InvalidSpeakerError
-
-    voice = PiperVoice(FakeRuntime(), voice_config(3))
     with pytest.raises(InvalidSpeakerError, match="unknown speaker"):
         voice.resolve_speaker_id("guest")
     with pytest.raises(InvalidSpeakerError, match="outside"):
         voice.resolve_speaker_id(3)
+    with pytest.raises(InvalidSpeakerError, match="unknown speaker"):
+        voice.synthesize(SynthesisRequest("id", "hello", "en-us", speaker="guest"))
+    with pytest.raises(InvalidSpeakerError, match="outside"):
+        voice.synthesize(SynthesisRequest("id", "hello", "en-us", speaker=3))
+
+
+def test_missing_model_file_is_a_typed_error(tmp_path: Path) -> None:
+    with pytest.raises(ModelFileNotFoundError):
+        PiperVoice.from_local(tmp_path / "missing.onnx")
+
+
+def test_synthesis_identity_includes_audio_inputs_but_excludes_transient_options() -> None:
+    installation = SimpleNamespace(
+        id="catalog-voice",
+        metadata={"quality": "medium", "source_revision": "revision-7"},
+    )
+
+    def render(cache_dir: str, progress: Any, *, length_scale: float = 0.8) -> SynthesisResult:
+        runtime = FakeRuntime()
+        g2p = FakeG2P()
+        voice = PiperVoice(
+            runtime,
+            voice_config(),
+            installation=installation,
+            g2p_factory=lambda language, *, config, **options: g2p,
+            g2p_options={
+                "use_cli": True,
+                "cache_dir": cache_dir,
+                "progress": progress,
+                "provider_options": {"cache_dir": cache_dir, "dialect": "en-us"},
+            },
+        )
+        return voice.synthesize(
+            SynthesisRequest("id", "hello", "en-us"),
+            config=SynthesisConfig(
+                length_scale=length_scale, normalize_audio=False, output_gain=0.5
+            ),
+        )
+
+    first = render("/tmp/cache-one", lambda *_: None)
+    second = render("/different/cache", lambda *_: None)
+    identity = first.metadata["synthesis_identity"]
+    assert identity["pipersynth_version"]
+    assert identity["model_id"] == "catalog-voice"
+    assert identity["model_revision"] == "revision-7"
+    assert identity["quality"] == "medium"
+    assert identity["speaker_id"] == 0
+    assert identity["language"] == "en-us"
+    assert identity["length_scale"] == 0.8
+    assert identity["normalize_audio"] is False
+    assert identity["output_gain"] == 0.5
+    assert identity["frontend"]["g2p_version"]
+    assert identity["frontend"]["options"] == {
+        "provider_options": {"dialect": "en-us"},
+        "use_cli": True,
+    }
+    assert first.metadata["synthesis_hash"] == second.metadata["synthesis_hash"]
+    assert first.metadata["voice_level"] == {
+        "mode": "off",
+        "applied": False,
+        "gain_db": 0.0,
+        "source": "off",
+        "calibration_key": "piper:catalog-voice:medium:speaker-0",
+        "reason": "voice-level calibration is disabled",
+        "catalog_revision": None,
+    }
+    changed = render("/tmp/cache-one", lambda *_: None, length_scale=0.9)
+    assert changed.metadata["synthesis_hash"] != first.metadata["synthesis_hash"]
+
+
+def test_calibration_missing_states_and_override_are_observable() -> None:
+    def render(installation: Any, config: VoiceLevelConfig) -> dict[str, Any]:
+        voice = PiperVoice(
+            FakeRuntime(),
+            voice_config(),
+            installation=installation,
+            g2p_factory=lambda language, *, config: FakeG2P(),
+        )
+        return voice.synthesize_text(
+            "hello",
+            language="en-us",
+            config=SynthesisConfig(normalize_audio=False, voice_level=config),
+        ).metadata["voice_level"]
+
+    missing_identity = render(None, VoiceLevelConfig(mode="calibrated"))
+    assert missing_identity["source"] == "missing_identity"
+    assert missing_identity["reason"] == "the voice has no stable calibration identity"
+
+    unmeasured = render(
+        SimpleNamespace(id="unmeasured", metadata={"quality": "medium"}),
+        VoiceLevelConfig(mode="calibrated"),
+    )
+    assert unmeasured["source"] == "missing_calibration"
+    assert len(unmeasured["catalog_revision"]) == 64
+
+    override = render(
+        None,
+        VoiceLevelConfig(mode="calibrated", gain_db=0.0),
+    )
+    assert override["source"] == "override"
+    assert override["applied"] is False
+    assert override["reason"] == "an explicit gain_db override was selected"

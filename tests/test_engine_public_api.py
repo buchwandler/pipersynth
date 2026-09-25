@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import subprocess
 import sys
 import wave
@@ -12,8 +13,8 @@ import pytest
 import pipersynth
 import pipersynth.convenience as convenience
 from pipersynth import (
-    RenderedSegment,
     SynthesisConfig,
+    SynthesisResult,
     TextChunkingConfig,
     VoiceLevelConfig,
 )
@@ -34,24 +35,23 @@ class FakePiperVoice:
     def __exit__(self, *_: object) -> None:
         pass
 
-    def synthesize_text(self, prepared_text: str, **kwargs: Any) -> RenderedSegment:
+    def synthesize_text(self, prepared_text: str, **kwargs: Any) -> SynthesisResult:
         self.__class__.request = (prepared_text, kwargs)
-        return RenderedSegment(
+        return SynthesisResult(
             id=kwargs.get("id") or "generated",
             audio=np.array([0.25, -0.25], dtype=np.float32),
             sample_rate=22050,
             text=prepared_text,
             language=kwargs["language"],
-            speaker_id=1,
-            phonemes=("h",),
-            phoneme_ids=(1,),
+            metadata={"speaker_id": 1, "phonemes": ("h",), "phoneme_ids": (1,)},
         )
 
 
 def test_public_api_exports_only_engine_request_surface() -> None:
     assert pipersynth.PiperVoice
     assert pipersynth.SynthesisSegment
-    assert pipersynth.RenderedSegment
+    assert pipersynth.SynthesisRequest
+    assert pipersynth.SynthesisResult
     for removed in (
         "PiperPipeline",
         "PipelineConfig",
@@ -64,6 +64,16 @@ def test_public_api_exports_only_engine_request_surface() -> None:
         "PreparedTextResult",
     ):
         assert not hasattr(pipersynth, removed)
+
+
+def test_strict_synthesis_api_has_no_chunking_or_rendered_chunks() -> None:
+    synthesize_parameters = inspect.signature(pipersynth.PiperVoice.synthesize).parameters
+    text_parameters = inspect.signature(pipersynth.PiperVoice.synthesize_text).parameters
+    assert "chunking" not in synthesize_parameters
+    assert "chunking" not in text_parameters
+    assert "request" in synthesize_parameters
+    assert pipersynth.SynthesisResult.supports_timestamps is False
+    assert not hasattr(pipersynth.SynthesisResult, "chunks")
 
 
 def test_package_import_without_removed_dependencies() -> None:
@@ -103,9 +113,8 @@ def test_convenience_synthesizes_prepared_text_through_piper_voice(monkeypatch) 
         output_gain=0.8,
         voice_level=VoiceLevelConfig(mode="calibrated", gain_db=1.0),
         offline=True,
-        chunking=TextChunkingConfig(mode="none"),
     )
-    assert isinstance(result, RenderedSegment)
+    assert isinstance(result, SynthesisResult)
     assert result.text == "Prepared text."
     assert FakePiperVoice.calls[0][0] == "en_US-lessac-medium"
     assert FakePiperVoice.calls[0][1]["offline"] is True
@@ -114,7 +123,7 @@ def test_convenience_synthesizes_prepared_text_through_piper_voice(monkeypatch) 
     assert request[0] == "Prepared text."
     assert request[1]["language"] == "en-us"
     assert request[1]["id"] == "item-1"
-    assert request[1]["chunking"] == TextChunkingConfig(mode="none")
+    assert "chunking" not in request[1]
     assert request[1]["speaker"] == "speaker_2"
     config = request[1]["config"]
     assert isinstance(config, SynthesisConfig)
@@ -130,11 +139,10 @@ def test_convenience_wav_helper_writes_independent_result(monkeypatch, tmp_path:
         tmp_path / "nested" / "speech.wav",
         voice="test-voice",
         language="en-us",
-        chunking=TextChunkingConfig(mode="none"),
     )
     assert output.exists()
     assert FakePiperVoice.request is not None
-    assert FakePiperVoice.request[1]["chunking"] == TextChunkingConfig(mode="none")
+    assert "chunking" not in FakePiperVoice.request[1]
     with wave.open(str(output), "rb") as wav:
         assert wav.getnchannels() == 1
         assert wav.getsampwidth() == 2
@@ -145,7 +153,7 @@ def test_convenience_wav_helper_writes_independent_result(monkeypatch, tmp_path:
 
 def test_public_text_chunking_config_validates_mode_and_limit() -> None:
     assert pipersynth.TextChunkingConfig is TextChunkingConfig
-    assert TextChunkingConfig().mode == "sentence"
+    assert TextChunkingConfig().mode == "none"
     assert TextChunkingConfig(mode="sentence", max_chars=120).max_chars == 120
     assert TextChunkingConfig(mode="none").max_chars is None
 
@@ -159,7 +167,7 @@ def test_public_text_chunking_config_validates_mode_and_limit() -> None:
         TextChunkingConfig(mode="none", max_chars=10)
 
 
-def test_none_chunking_synthesizes_in_subprocess_without_phrasplit() -> None:
+def test_strict_synthesis_does_not_import_phrasplit_in_subprocess() -> None:
     command = """\\
 import builtins
 from types import SimpleNamespace
@@ -173,7 +181,7 @@ builtins.__import__ = block_phrasplit
 
 import numpy as np
 from piperg2p import PhonemeSentence, VoiceConfig
-from pipersynth import PiperVoice, TextChunkingConfig
+from pipersynth import PiperVoice
 
 config = VoiceConfig.from_dict({
     "num_symbols": 4,
@@ -201,10 +209,9 @@ voice = PiperVoice(
 result = voice.synthesize_text(
     "prepared text",
     language="en-us",
-    chunking=TextChunkingConfig(mode="none"),
  )
 assert result.audio.size == 1
-assert [chunk.index for chunk in result.chunks] == [0]
+assert result.word_timings == ()
 voice.close()
 """
     result = subprocess.run(

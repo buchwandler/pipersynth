@@ -7,14 +7,26 @@ from io import BytesIO
 import numpy as np
 import pytest
 
-from pipersynth.errors import InvalidSynthesisConfigError, ModelInferenceError
+import pipersynth
+from pipersynth.errors import (
+    EmptyTextError,
+    InvalidLanguageError,
+    InvalidLinguisticTokensError,
+    InvalidPronunciationError,
+    InvalidSynthesisConfigError,
+    ModelInferenceError,
+    SynthesisInputTooLongError,
+)
 from pipersynth.types import (
     LinguisticToken,
     PronunciationOverride,
     RenderedChunk,
     RenderedSegment,
     SynthesisConfig,
+    SynthesisRequest,
+    SynthesisResult,
     SynthesisSegment,
+    WordTiming,
 )
 from pipersynth.voice_level import VoiceLevelConfig
 
@@ -135,3 +147,110 @@ def test_rendered_result_rejects_non_mono_or_nonfinite_audio() -> None:
 def test_rendered_chunk_requires_positive_sample_rate() -> None:
     with pytest.raises(ValueError, match="sample_rate"):
         RenderedChunk(0, np.zeros(1), 0, "line-1")
+
+
+@pytest.mark.parametrize("text", ["", "  ", "\n\t"])
+def test_synthesis_request_rejects_empty_text(text: str) -> None:
+    with pytest.raises(EmptyTextError):
+        SynthesisRequest("id", text, "en-us")
+
+
+def test_synthesis_request_rejects_empty_language_and_invalid_speaker() -> None:
+    with pytest.raises(InvalidLanguageError):
+        SynthesisRequest("id", "hello", "  ")
+    with pytest.raises(ValueError):
+        SynthesisRequest("id", "hello", "en-us", speaker=True)
+
+
+def test_synthesis_request_validates_token_order_spans_and_text() -> None:
+    with pytest.raises(InvalidLinguisticTokensError, match="does not match"):
+        SynthesisRequest("id", "hello", "en-us", tokens=(LinguisticToken(0, 2, text="heh"),))
+    with pytest.raises(InvalidLinguisticTokensError, match="exceeds"):
+        SynthesisRequest("id", "hello", "en-us", tokens=(LinguisticToken(0, 6),))
+    with pytest.raises(InvalidLinguisticTokensError, match="sorted and non-overlapping"):
+        SynthesisRequest(
+            "id",
+            "hello world",
+            "en-us",
+            tokens=(LinguisticToken(6, 11), LinguisticToken(0, 5)),
+        )
+    with pytest.raises(InvalidLinguisticTokensError, match="sorted and non-overlapping"):
+        SynthesisRequest(
+            "id",
+            "hello world",
+            "en-us",
+            tokens=(LinguisticToken(0, 5), LinguisticToken(4, 7)),
+        )
+
+
+def test_synthesis_request_preserves_full_tokens_and_pronunciation_offsets() -> None:
+    request = SynthesisRequest(
+        "line-1",
+        "hello world",
+        "en-us",
+        tokens=(
+            LinguisticToken(
+                0,
+                5,
+                text="hello",
+                pos="NOUN",
+                tag="NN",
+                lemma="hello",
+                language="en",
+                morph="Number=Sing",
+            ),
+        ),
+        pronunciation_overrides=(PronunciationOverride(6, 11, phonemes="wɜːld"),),
+    )
+    assert request.tokens[0].morph == "Number=Sing"
+    assert (request.pronunciation_overrides[0].start, request.pronunciation_overrides[0].end) == (
+        6,
+        11,
+    )
+    assert pipersynth.SynthesisRequest is SynthesisRequest
+
+
+def test_synthesis_request_rejects_pronunciation_span_outside_text() -> None:
+    with pytest.raises(InvalidPronunciationError, match="exceeds"):
+        SynthesisRequest(
+            "id",
+            "hello",
+            "en-us",
+            pronunciation_overrides=(PronunciationOverride(0, 6, phonemes="h"),),
+        )
+
+
+def test_synthesis_result_has_stable_mono_audio_and_no_word_timings() -> None:
+    result = SynthesisResult(
+        id="line-1",
+        audio=np.array([0.25, -0.25], dtype=np.float64),
+        sample_rate=22050,
+        text="hello",
+        language="en-us",
+        metadata={"speaker_id": 1},
+    )
+    assert result.audio.dtype == np.float32
+    assert result.audio.ndim == 1
+    assert result.word_timings == ()
+    assert result.supports_timestamps is False
+    assert result.metadata == {"speaker_id": 1}
+    assert pipersynth.SynthesisResult is SynthesisResult
+    assert pipersynth.WordTiming is WordTiming
+    target = BytesIO()
+    result.save_wav(target)
+    target.seek(0)
+    with wave.open(target, "rb") as wav:
+        assert wav.getnchannels() == 1
+        assert wav.getframerate() == 22050
+        assert wav.getnframes() == 2
+
+
+def test_input_too_long_error_retains_known_capacity_fields() -> None:
+    error = SynthesisInputTooLongError(
+        text_length=100, phoneme_count=300, max_phonemes=256, model_id="voice-id"
+    )
+    assert error.text_length == 100
+    assert error.phoneme_count == 300
+    assert error.max_phonemes == 256
+    assert error.model_id == "voice-id"
+    assert "phoneme_count=300" in str(error)

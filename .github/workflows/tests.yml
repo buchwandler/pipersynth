@@ -22,6 +22,6 @@ jobs:
         python -m compileall -q pipersynth tests
     - name: Type-check public API
       if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
-      run: python -m mypy --config-file tests/typecheck/mypy.ini tests/typecheck/public_api.py
+      run: python -m mypy --config-file tests/typecheck/mypy.ini tests/typecheck/engine_api.py
     - name: Tests
       run: pytest -m "not slow"

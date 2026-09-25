@@ -1,14 +1,23 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, Literal
+from typing import Any, BinaryIO, ClassVar, Literal
 
 import numpy as np
 
 from .audio import audio_to_int16_bytes, float_to_int16, write_wav
 from .diagnostics import RuntimeDiagnostics
-from .errors import InvalidSynthesisConfigError, ModelInferenceError
+from .errors import (
+    EmptyTextError,
+    InvalidLanguageError,
+    InvalidLinguisticTokensError,
+    InvalidPronunciationError,
+    InvalidSpeakerError,
+    InvalidSynthesisConfigError,
+    ModelInferenceError,
+)
 from .voice_level import VoiceLevelConfig
 
 
@@ -19,7 +28,13 @@ def _finite(value: float, name: str, *, minimum: float) -> None:
         raise InvalidSynthesisConfigError(f"{name} must be finite and >= {minimum}")
 
 
-def _valid_span(start: int, end: int) -> None:
+def _valid_span(
+    start: int,
+    end: int,
+    *,
+    error: type[ValueError] = ValueError,
+    label: str = "span",
+) -> None:
     if (
         isinstance(start, bool)
         or not isinstance(start, int)
@@ -28,7 +43,7 @@ def _valid_span(start: int, end: int) -> None:
         or start < 0
         or start >= end
     ):
-        raise ValueError("span must satisfy 0 <= start < end")
+        raise error(f"{label} must satisfy 0 <= start < end")
 
 
 def _validated_audio(audio: np.ndarray, *, name: str) -> np.ndarray:
@@ -54,18 +69,25 @@ class PronunciationOverride:
     stress: str | None = None
 
     def __post_init__(self) -> None:
-        _valid_span(self.start, self.end)
+        _valid_span(
+            self.start,
+            self.end,
+            error=InvalidPronunciationError,
+            label="pronunciation span",
+        )
         if all(value is None for value in (self.phonemes, self.language, self.stress)):
-            raise ValueError("pronunciation override must specify at least one effect")
+            raise InvalidPronunciationError(
+                "pronunciation override must specify at least one effect"
+            )
         for name, value in (
             ("phonemes", self.phonemes),
             ("language", self.language),
             ("stress", self.stress),
         ):
             if value is not None and (not isinstance(value, str) or not value):
-                raise ValueError(f"{name} must be a non-empty string or None")
+                raise InvalidPronunciationError(f"{name} must be a non-empty string or None")
         if self.stress is not None and self.stress not in {"-2", "-1", "1", "2"}:
-            raise ValueError("stress must be one of '-2', '-1', '1', or '2'")
+            raise InvalidPronunciationError("stress must be one of '-2', '-1', '1', or '2'")
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,11 +102,11 @@ class LinguisticToken:
     morph: str | None = None
 
     def __post_init__(self) -> None:
-        _valid_span(self.start, self.end)
+        _valid_span(self.start, self.end, error=InvalidLinguisticTokensError, label="token span")
         for name in ("text", "pos", "tag", "lemma", "language", "morph"):
             value = getattr(self, name)
             if value is not None and not isinstance(value, str):
-                raise ValueError(f"{name} must be a string or None")
+                raise InvalidLinguisticTokensError(f"{name} must be a string or None")
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,33 +123,166 @@ class SynthesisSegment:
             raise ValueError("id must be a non-empty string")
         if not isinstance(self.text, str):
             raise ValueError("text must be a string")
-        if not isinstance(self.language, str) or not self.language:
-            raise ValueError("language must be a non-empty string")
+        if not self.text.strip():
+            raise EmptyTextError("text must not be empty or whitespace-only")
+        if not isinstance(self.language, str) or not self.language.strip():
+            raise InvalidLanguageError("language must be a non-empty string")
         if self.speaker is not None and (
             isinstance(self.speaker, bool) or not isinstance(self.speaker, (int, str))
         ):
-            raise ValueError("speaker must be an integer, name, or None")
-        if isinstance(self.speaker, str) and not self.speaker:
-            raise ValueError("speaker name must be non-empty")
+            raise InvalidSpeakerError("speaker must be an integer, name, or None")
+        if isinstance(self.speaker, str) and not self.speaker.strip():
+            raise InvalidSpeakerError("speaker name must be non-empty")
         overrides = tuple(self.pronunciation_overrides)
         annotations = tuple(self.annotations)
         if any(not isinstance(item, PronunciationOverride) for item in overrides):
-            raise TypeError("pronunciation_overrides must contain PronunciationOverride values")
+            raise InvalidPronunciationError(
+                "pronunciation_overrides must contain PronunciationOverride values"
+            )
         if any(not isinstance(item, LinguisticToken) for item in annotations):
-            raise TypeError("annotations must contain LinguisticToken values")
+            raise InvalidLinguisticTokensError("annotations must contain LinguisticToken values")
         for override in overrides:
             if override.end > len(self.text):
-                raise ValueError("pronunciation override span exceeds text length")
+                raise InvalidPronunciationError("pronunciation override span exceeds text length")
         for annotation in annotations:
             if annotation.end > len(self.text):
-                raise ValueError("annotation span exceeds text length")
+                raise InvalidLinguisticTokensError("annotation span exceeds text length")
             if (
                 annotation.text is not None
                 and self.text[annotation.start : annotation.end] != annotation.text
             ):
-                raise ValueError("annotation text does not match its source span")
+                raise InvalidLinguisticTokensError("annotation text does not match its source span")
         object.__setattr__(self, "pronunciation_overrides", overrides)
         object.__setattr__(self, "annotations", annotations)
+
+
+@dataclass(frozen=True, slots=True)
+class SynthesisRequest:
+    """One caller-shaped atomic Piper synthesis request."""
+
+    id: str
+    text: str
+    language: str
+    speaker: int | str | None = None
+    tokens: tuple[LinguisticToken, ...] = ()
+    pronunciation_overrides: tuple[PronunciationOverride, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str) or not self.id.strip():
+            raise ValueError("id must be a non-empty string")
+        if not isinstance(self.text, str):
+            raise EmptyTextError("text must be a string")
+        if not self.text.strip():
+            raise EmptyTextError("text must not be empty or whitespace-only")
+        if not isinstance(self.language, str) or not self.language.strip():
+            raise InvalidLanguageError("language must be a non-empty string")
+        if self.speaker is not None and (
+            isinstance(self.speaker, bool) or not isinstance(self.speaker, (int, str))
+        ):
+            raise InvalidSpeakerError("speaker must be an integer, name, or None")
+        if isinstance(self.speaker, str) and not self.speaker.strip():
+            raise InvalidSpeakerError("speaker name must be non-empty")
+
+        try:
+            tokens = tuple(self.tokens)
+        except TypeError as exc:
+            raise InvalidLinguisticTokensError(
+                "tokens must be an iterable of LinguisticToken"
+            ) from exc
+        if any(not isinstance(token, LinguisticToken) for token in tokens):
+            raise InvalidLinguisticTokensError("tokens must contain LinguisticToken values")
+        previous_start = -1
+        previous_end = 0
+        for token in tokens:
+            if token.start < previous_start or token.start < previous_end:
+                raise InvalidLinguisticTokensError("tokens must be sorted and non-overlapping")
+            if token.end > len(self.text):
+                raise InvalidLinguisticTokensError("token span exceeds text length")
+            if token.text is not None and self.text[token.start : token.end] != token.text:
+                raise InvalidLinguisticTokensError("token text does not match its source span")
+            previous_start = token.start
+            previous_end = token.end
+
+        try:
+            overrides = tuple(self.pronunciation_overrides)
+        except TypeError as exc:
+            raise InvalidPronunciationError(
+                "pronunciation_overrides must be an iterable of PronunciationOverride"
+            ) from exc
+        if any(not isinstance(item, PronunciationOverride) for item in overrides):
+            raise InvalidPronunciationError(
+                "pronunciation_overrides must contain PronunciationOverride values"
+            )
+        if any(item.end > len(self.text) for item in overrides):
+            raise InvalidPronunciationError("pronunciation override span exceeds text length")
+        object.__setattr__(self, "tokens", tokens)
+        object.__setattr__(self, "pronunciation_overrides", overrides)
+
+
+@dataclass(frozen=True, slots=True)
+class WordTiming:
+    """Model-derived timing for one source-text span."""
+
+    text: str
+    char_start: int
+    char_end: int
+    start_sample: int
+    end_sample: int
+    segment_id: str
+    source: Literal["model_pred_dur"] = "model_pred_dur"
+
+    def start_seconds(self, sample_rate: int) -> float:
+        return self.start_sample / sample_rate
+
+    def end_seconds(self, sample_rate: int) -> float:
+        return self.end_sample / sample_rate
+
+
+@dataclass(slots=True)
+class SynthesisResult:
+    """Stable public result returned for one atomic synthesis request."""
+
+    id: str
+    audio: np.ndarray
+    sample_rate: int
+    text: str
+    language: str
+    warnings: tuple[str, ...] = ()
+    word_timings: tuple[WordTiming, ...] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    supports_timestamps: ClassVar[bool] = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str) or not self.id:
+            raise ValueError("id must be a non-empty string")
+        if not isinstance(self.text, str):
+            raise ValueError("text must be a string")
+        if not isinstance(self.language, str) or not self.language.strip():
+            raise InvalidLanguageError("language must be a non-empty string")
+        _validate_rate(self.sample_rate)
+        self.audio = _validated_audio(self.audio, name="result audio")
+        self.warnings = tuple(self.warnings)
+        self.word_timings = tuple(self.word_timings)
+        if any(not isinstance(timing, WordTiming) for timing in self.word_timings):
+            raise TypeError("word_timings must contain WordTiming values")
+        self.metadata = dict(self.metadata)
+
+    @property
+    def duration_seconds(self) -> float:
+        return self.audio.size / self.sample_rate
+
+    @property
+    def int16_array(self) -> np.ndarray:
+        return float_to_int16(self.audio)
+
+    @property
+    def int16_bytes(self) -> bytes:
+        return audio_to_int16_bytes(self.audio)
+
+    def save_wav(self, target: str | Path | BinaryIO) -> str | Path | BinaryIO:
+        write_wav(target, self.audio, self.sample_rate)
+        return target
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,7 +317,7 @@ TextSplitMode = Literal["sentence", "none"]
 class TextChunkingConfig:
     """Request-local prepared-text segmentation policy."""
 
-    mode: TextSplitMode = "sentence"
+    mode: TextSplitMode = "none"
     max_chars: int | None = None
 
     def __post_init__(self) -> None:

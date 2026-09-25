@@ -49,6 +49,10 @@ def test_catalog_gain_and_explicit_override_precedence() -> None:
         audio, VoiceLevelConfig(mode="calibrated"), key, catalog=catalog
     )
     assert application.source == "catalog"
+    assert application.mode == "calibrated"
+    assert application.calibration_key == key
+    assert application.catalog_revision is None
+    assert "matching" in application.reason
     np.testing.assert_allclose(leveled, [10 ** (-6 / 20)], rtol=1e-5)
     overridden, application = apply_voice_level_calibration(
         audio,
@@ -57,6 +61,8 @@ def test_catalog_gain_and_explicit_override_precedence() -> None:
         catalog=catalog,
     )
     assert application.source == "override"
+    assert application.mode == "calibrated"
+    assert application.reason == "an explicit gain_db override was selected"
     np.testing.assert_allclose(overridden, [10 ** (-12 / 20)], rtol=1e-5)
 
 
