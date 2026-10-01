@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import re
 import tarfile
 import zipfile
 from pathlib import Path
@@ -64,6 +65,22 @@ def test_rejects_missing_core_dependency_floor(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="piperg2p"):
         validate_release_artifacts(tmp_path, "v0.2.0")
+
+
+def test_onnxvoice_dependency_ranges_require_02_line() -> None:
+    project = Path(__file__).parents[1] / "pyproject.toml"
+    requirements = re.findall(
+        r'"(onnxvoice(?:\[(?:cpu|gpu)\])?>[^"]+)"',
+        project.read_text(encoding="utf-8"),
+    )
+
+    assert requirements == [
+        "onnxvoice>=0.2.0,<0.3.0",
+        "onnxvoice[cpu]>=0.2.0,<0.3.0",
+        "onnxvoice[gpu]>=0.2.0,<0.3.0",
+        "onnxvoice>=0.2.0,<0.3.0",
+    ]
+    assert CORE_MINIMUMS["onnxvoice"] == "0.2.0"
 
 
 def test_rejects_private_ledger_files_in_sdist(tmp_path: Path) -> None:

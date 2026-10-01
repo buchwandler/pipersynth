@@ -13,7 +13,7 @@ authors = [{name = "PiperSynth contributors"}]
 dependencies = [
   "numpy>=1.23",
   "piperg2p>=0.1.7,<0.2",
-  "onnxvoice>=0.1.10,<0.2",
+  "onnxvoice>=0.2.0,<0.3.0",
   "audiosig>=0.1.4,<0.2",
  ]
 keywords = ["tts", "text-to-speech", "piper", "onnx", "speech", "onnxruntime"]
@@ -37,9 +37,9 @@ Repository = "https://github.com/buchwandler/pipersynth"
 Issues = "https://github.com/buchwandler/pipersynth/issues"
 
 [project.optional-dependencies]
-cpu = ["onnxvoice[cpu]>=0.1.10,<0.2"]
-gpu = ["onnxvoice[gpu]>=0.1.10,<0.2"]
-catalog = ["onnxvoice>=0.1.10,<0.2"]
+cpu = ["onnxvoice[cpu]>=0.2.0,<0.3.0"]
+gpu = ["onnxvoice[gpu]>=0.2.0,<0.3.0"]
+catalog = ["onnxvoice>=0.2.0,<0.3.0"]
 playback = ["sounddevice>=0.5,<0.6"]
 dev = [
   "pytest>=8",

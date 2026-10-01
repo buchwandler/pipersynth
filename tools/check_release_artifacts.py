@@ -14,7 +14,7 @@ from packaging.version import Version
 CORE_MINIMUMS = {
     "numpy": "1.23",
     "piperg2p": "0.1.7",
-    "onnxvoice": "0.1.10",
+    "onnxvoice": "0.2.0",
     "audiosig": "0.1.4",
 }
 FORBIDDEN_DEPENDENCIES = {"utterplan", "audiocompose", "ssmd", "phrasplit"}
