@@ -1,0 +1,26 @@
+schema: releaseledger.entry-batch.v1
+operation: create
+schema_version: 1
+object_type: release_entry_batch
+release_version: v0.2.1
+git_base_ref: 3a396f72d7274b821b964678e65a814ac75996d7
+git_base_sha: 3a396f72d7274b821b964678e65a814ac75996d7
+git_head_ref: 98047f99206de51aa3597d46e1fc43c1538410f0
+git_head_sha: 98047f99206de51aa3597d46e1fc43c1538410f0
+include_merges: nontrivial
+entries:
+  - kind: changed
+    summary: "Changed the minimum supported onnxvoice version to 0.2.0"
+    status: accepted
+    source_refs:
+      - git:98047f99206de51aa3597d46e1fc43c1538410f0
+    paths:
+      - pyproject.toml
+      - tests/test_release_artifacts.py
+      - tools/check_release_artifacts.py
+    sources:
+      - git:98047f99206de51aa3597d46e1fc43c1538410f0
+    prs: []
+    issues: []
+    contributors:
+      - "@holgern"

@@ -1,0 +1,27 @@
+{
+  "candidate_count": 1,
+  "candidates": [
+    {
+      "additions": 22,
+      "deletions": 5,
+      "patch_file": "98047f9.patch",
+      "patch_sha256": "529a38d1229ccbf7e45ce2a560a2d1847df1e1cab914d07cbc2843fd9597cf43",
+      "paths": [
+        "pyproject.toml",
+        "tests/test_release_artifacts.py",
+        "tools/check_release_artifacts.py"
+      ],
+      "sha": "98047f99206de51aa3597d46e1fc43c1538410f0",
+      "short_sha": "98047f9",
+      "source_ref": "git:98047f99206de51aa3597d46e1fc43c1538410f0"
+    }
+  ],
+  "git_base_ref": "3a396f72d7274b821b964678e65a814ac75996d7",
+  "git_base_sha": "3a396f72d7274b821b964678e65a814ac75996d7",
+  "git_head_ref": "98047f99206de51aa3597d46e1fc43c1538410f0",
+  "git_head_sha": "98047f99206de51aa3597d46e1fc43c1538410f0",
+  "include_merges": "nontrivial",
+  "object_type": "git_evidence_manifest",
+  "release_version": "v0.2.1",
+  "schema_version": 1
+}

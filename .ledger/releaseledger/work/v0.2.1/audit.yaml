@@ -1,0 +1,31 @@
+schema_version: 1
+object_type: commit_audit_sheet
+versioning:
+  schema_version: 1
+  revision: 1
+release_version: v0.2.1
+git_base_ref: v0.2.0
+git_base_sha: 3a396f72d7274b821b964678e65a814ac75996d7
+git_head_ref: HEAD
+git_head_sha: 98047f99206de51aa3597d46e1fc43c1538410f0
+git_range: 3a396f72d7274b821b964678e65a814ac75996d7..98047f99206de51aa3597d46e1fc43c1538410f0
+commit_count: 1
+rows:
+  - sha: 98047f99206de51aa3597d46e1fc43c1538410f0
+    source_ref: git:98047f99206de51aa3597d46e1fc43c1538410f0
+    short_sha: 98047f9
+    changed_paths:
+      - pyproject.toml
+      - tests/test_release_artifacts.py
+      - tools/check_release_artifacts.py
+    stats:
+      files_changed: 3
+      insertions: 22
+      deletions: 5
+    inspected: false
+    inspected_paths: []
+    observed_behavior: ""
+    public_impact: unknown
+    decision: needs_review
+    stale: false
+    evidence_subject: "feat: increase onnxvoice dep floor"

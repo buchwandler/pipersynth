@@ -1,0 +1,79 @@
+ pyproject.toml                   |  8 ++++----
+ tests/test_release_artifacts.py  | 17 +++++++++++++++++
+ tools/check_release_artifacts.py |  2 +-
+ 3 files changed, 22 insertions(+), 5 deletions(-)
+
+diff --git a/pyproject.toml b/pyproject.toml
+index 723ae2d..4ed6550 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -13,7 +13,7 @@ authors = [{name = "PiperSynth contributors"}]
+ dependencies = [
+   "numpy>=1.23",
+   "piperg2p>=0.1.7,<0.2",
+-  "onnxvoice>=0.1.10,<0.2",
++  "onnxvoice>=0.2.0,<0.3.0",
+   "audiosig>=0.1.4,<0.2",
+  ]
+ keywords = ["tts", "text-to-speech", "piper", "onnx", "speech", "onnxruntime"]
+@@ -37,9 +37,9 @@ Repository = "https://github.com/buchwandler/pipersynth"
+ Issues = "https://github.com/buchwandler/pipersynth/issues"
+
+ [project.optional-dependencies]
+-cpu = ["onnxvoice[cpu]>=0.1.10,<0.2"]
+-gpu = ["onnxvoice[gpu]>=0.1.10,<0.2"]
+-catalog = ["onnxvoice>=0.1.10,<0.2"]
++cpu = ["onnxvoice[cpu]>=0.2.0,<0.3.0"]
++gpu = ["onnxvoice[gpu]>=0.2.0,<0.3.0"]
++catalog = ["onnxvoice>=0.2.0,<0.3.0"]
+ playback = ["sounddevice>=0.5,<0.6"]
+ dev = [
+   "pytest>=8",
+diff --git a/tests/test_release_artifacts.py b/tests/test_release_artifacts.py
+index f576196..be68d6e 100644
+--- a/tests/test_release_artifacts.py
++++ b/tests/test_release_artifacts.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+
+ import io
++import re
+ import tarfile
+ import zipfile
+ from pathlib import Path
+@@ -66,6 +67,22 @@ def test_rejects_missing_core_dependency_floor(tmp_path: Path) -> None:
+         validate_release_artifacts(tmp_path, "v0.2.0")
+
+
++def test_onnxvoice_dependency_ranges_require_02_line() -> None:
++    project = Path(__file__).parents[1] / "pyproject.toml"
++    requirements = re.findall(
++        r'"(onnxvoice(?:\[(?:cpu|gpu)\])?>[^"]+)"',
++        project.read_text(encoding="utf-8"),
++    )
++
++    assert requirements == [
++        "onnxvoice>=0.2.0,<0.3.0",
++        "onnxvoice[cpu]>=0.2.0,<0.3.0",
++        "onnxvoice[gpu]>=0.2.0,<0.3.0",
++        "onnxvoice>=0.2.0,<0.3.0",
++    ]
++    assert CORE_MINIMUMS["onnxvoice"] == "0.2.0"
++
++
+ def test_rejects_private_ledger_files_in_sdist(tmp_path: Path) -> None:
+     _write_artifacts(tmp_path, private_sdist_path=".ledger/taskledger/config.toml")
+
+diff --git a/tools/check_release_artifacts.py b/tools/check_release_artifacts.py
+index cfad85b..60f7e99 100644
+--- a/tools/check_release_artifacts.py
++++ b/tools/check_release_artifacts.py
+@@ -14,7 +14,7 @@ from packaging.version import Version
+ CORE_MINIMUMS = {
+     "numpy": "1.23",
+     "piperg2p": "0.1.7",
+-    "onnxvoice": "0.1.10",
++    "onnxvoice": "0.2.0",
+     "audiosig": "0.1.4",
+ }
+ FORBIDDEN_DEPENDENCIES = {"utterplan", "audiocompose", "ssmd", "phrasplit"}
