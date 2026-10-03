@@ -75,6 +75,37 @@ _TRANSIENT_G2P_OPTIONS = frozenset(
 _UNSTABLE_OPTION = object()
 
 
+def _normalize_language(value: str) -> str:
+    return value.strip().casefold().replace("_", "-")
+
+
+def _resolve_model_frontend_language(
+    requested_language: str,
+    model_language: str,
+) -> str | None:
+    requested = _normalize_language(requested_language)
+    active = _normalize_language(model_language)
+
+    if requested == active:
+        return model_language
+
+    requested_parts = requested.split("-")
+    active_parts = active.split("-")
+    if requested_parts[0] != active_parts[0]:
+        return None
+
+    if len(requested_parts) == 1:
+        return model_language
+
+    if (
+        len(active_parts) > len(requested_parts)
+        and active_parts[: len(requested_parts)] == requested_parts
+    ):
+        return model_language
+
+    return None
+
+
 def _stable_option_value(value: Any) -> Any:
     if value is None or isinstance(value, (str, bool, int)):
         return value
@@ -464,10 +495,13 @@ class PiperVoice:
             raise InvalidRequestError("request must be a SynthesisRequest")
         model_language = self.config.espeak_voice
         phoneme_type = getattr(self.config.phoneme_type, "value", self.config.phoneme_type)
+        frontend_language = request.language
         if phoneme_type == "espeak" and model_language:
-            requested = request.language.casefold().replace("_", "-")
-            active = model_language.casefold().replace("_", "-")
-            if requested != active:
+            frontend_language = _resolve_model_frontend_language(
+                request.language,
+                model_language,
+            )
+            if frontend_language is None:
                 raise InvalidLanguageError(
                     f"language {request.language!r} is incompatible with active Piper model language "
                     f"{model_language!r}"
@@ -498,7 +532,11 @@ class PiperVoice:
             for token in request.tokens
         )
         try:
-            g2p = self._g2p_factory(request.language, config=self.config, **self._g2p_options)
+            g2p = self._g2p_factory(
+                frontend_language,
+                config=self.config,
+                **self._g2p_options,
+            )
             result = g2p.phonemize_prepared(
                 request.text,
                 overrides=overrides or None,
