@@ -1,0 +1,30 @@
+schema_version: 1
+object_type: commit_audit_sheet
+versioning:
+  schema_version: 1
+  revision: 1
+release_version: v0.2.2
+git_base_ref: v0.2.1
+git_base_sha: 83c1d42c142cd54a09ef472778f0a2a2a5f162a1
+git_head_ref: HEAD
+git_head_sha: 65433e2357847c2c2214d7c0e3829c7e2eedf6d9
+git_range: 83c1d42c142cd54a09ef472778f0a2a2a5f162a1..65433e2357847c2c2214d7c0e3829c7e2eedf6d9
+commit_count: 1
+rows:
+  - sha: 65433e2357847c2c2214d7c0e3829c7e2eedf6d9
+    source_ref: git:65433e2357847c2c2214d7c0e3829c7e2eedf6d9
+    short_sha: 65433e2
+    changed_paths:
+      - pipersynth/voice.py
+      - tests/test_engine_voice.py
+    stats:
+      files_changed: 2
+      insertions: 114
+      deletions: 9
+    inspected: false
+    inspected_paths: []
+    observed_behavior: ""
+    public_impact: unknown
+    decision: needs_review
+    stale: false
+    evidence_subject: "feat: fix voice selection"

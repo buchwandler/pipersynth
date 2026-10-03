@@ -1,0 +1,25 @@
+schema: releaseledger.entry-batch.v1
+operation: create
+schema_version: 1
+object_type: release_entry_batch
+release_version: v0.2.2
+git_base_ref: 83c1d42c142cd54a09ef472778f0a2a2a5f162a1
+git_base_sha: 83c1d42c142cd54a09ef472778f0a2a2a5f162a1
+git_head_ref: 65433e2357847c2c2214d7c0e3829c7e2eedf6d9
+git_head_sha: 65433e2357847c2c2214d7c0e3829c7e2eedf6d9
+include_merges: nontrivial
+entries:
+  - kind: fixed
+    summary: "Fixed language matching for regional eSpeak voice variants"
+    status: accepted
+    source_refs:
+      - git:65433e2357847c2c2214d7c0e3829c7e2eedf6d9
+    paths:
+      - pipersynth/voice.py
+      - tests/test_engine_voice.py
+    sources:
+      - git:65433e2357847c2c2214d7c0e3829c7e2eedf6d9
+    prs: []
+    issues: []
+    contributors:
+      - "@holgern"

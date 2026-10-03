@@ -1,0 +1,179 @@
+ pipersynth/voice.py        | 46 ++++++++++++++++++++++++---
+ tests/test_engine_voice.py | 77 +++++++++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 114 insertions(+), 9 deletions(-)
+
+diff --git a/pipersynth/voice.py b/pipersynth/voice.py
+index adc43be..14896ea 100644
+--- a/pipersynth/voice.py
++++ b/pipersynth/voice.py
+@@ -75,6 +75,37 @@ _TRANSIENT_G2P_OPTIONS = frozenset(
+ _UNSTABLE_OPTION = object()
+
+
++def _normalize_language(value: str) -> str:
++    return value.strip().casefold().replace("_", "-")
++
++
++def _resolve_model_frontend_language(
++    requested_language: str,
++    model_language: str,
++) -> str | None:
++    requested = _normalize_language(requested_language)
++    active = _normalize_language(model_language)
++
++    if requested == active:
++        return model_language
++
++    requested_parts = requested.split("-")
++    active_parts = active.split("-")
++    if requested_parts[0] != active_parts[0]:
++        return None
++
++    if len(requested_parts) == 1:
++        return model_language
++
++    if (
++        len(active_parts) > len(requested_parts)
++        and active_parts[: len(requested_parts)] == requested_parts
++    ):
++        return model_language
++
++    return None
++
++
+ def _stable_option_value(value: Any) -> Any:
+     if value is None or isinstance(value, (str, bool, int)):
+         return value
+@@ -464,10 +495,13 @@ class PiperVoice:
+             raise InvalidRequestError("request must be a SynthesisRequest")
+         model_language = self.config.espeak_voice
+         phoneme_type = getattr(self.config.phoneme_type, "value", self.config.phoneme_type)
++        frontend_language = request.language
+         if phoneme_type == "espeak" and model_language:
+-            requested = request.language.casefold().replace("_", "-")
+-            active = model_language.casefold().replace("_", "-")
+-            if requested != active:
++            frontend_language = _resolve_model_frontend_language(
++                request.language,
++                model_language,
++            )
++            if frontend_language is None:
+                 raise InvalidLanguageError(
+                     f"language {request.language!r} is incompatible with active Piper model language "
+                     f"{model_language!r}"
+@@ -498,7 +532,11 @@ class PiperVoice:
+             for token in request.tokens
+         )
+         try:
+-            g2p = self._g2p_factory(request.language, config=self.config, **self._g2p_options)
++            g2p = self._g2p_factory(
++                frontend_language,
++                config=self.config,
++                **self._g2p_options,
++            )
+             result = g2p.phonemize_prepared(
+                 request.text,
+                 overrides=overrides or None,
+diff --git a/tests/test_engine_voice.py b/tests/test_engine_voice.py
+index 485cd96..7210837 100644
+--- a/tests/test_engine_voice.py
++++ b/tests/test_engine_voice.py
+@@ -28,14 +28,19 @@ from pipersynth import (
+ )
+
+
+-def voice_config(num_speakers: int = 1, *, phoneme_type: str = "text") -> VoiceConfig:
++def voice_config(
++    num_speakers: int = 1,
++    *,
++    phoneme_type: str = "text",
++    espeak_voice: str = "en-us",
++) -> VoiceConfig:
+     return VoiceConfig.from_dict(
+         {
+             "num_symbols": 6,
+             "num_speakers": num_speakers,
+             "audio": {"sample_rate": 22050},
+             "phoneme_type": phoneme_type,
+-            "espeak": {"voice": "en-us"},
++            "espeak": {"voice": espeak_voice},
+             "phoneme_id_map": {"_": [0], "^": [1], "$": [2], "a": [3], "b": [4], " ": [5]},
+             "speaker_id_map": {"alice": 1} if num_speakers > 1 else {},
+             "default_speaker_id": 2 if num_speakers > 2 else 0,
+@@ -214,11 +219,73 @@ def test_unknown_capacity_does_not_invent_a_limit_or_split() -> None:
+     assert runtime.calls[0][0] == (3, 4)
+
+
+-def test_incompatible_model_language_is_typed() -> None:
+-    voice = PiperVoice(FakeRuntime(), voice_config(phoneme_type="espeak"))
++@pytest.mark.parametrize(
++    ("language", "espeak_voice"),
++    [
++        ("en-gb", "en-gb-x-rp"),
++        ("en_GB", "en-gb-x-rp"),
++        ("EN-GB", "en-gb-x-rp"),
++        ("en", "en-gb-x-rp"),
++        ("en-gb", "EN_GB_X_RP"),
++    ],
++)
++def test_compatible_language_uses_exact_active_espeak_voice(
++    language: str,
++    espeak_voice: str,
++) -> None:
++    runtime = FakeRuntime()
++    g2p = FakeG2P()
++    factory_calls: list[str] = []
++
++    def make_g2p(language: str, *, config: Any, **options: Any) -> FakeG2P:
++        factory_calls.append(language)
++        return g2p
++
++    voice = PiperVoice(
++        runtime,
++        voice_config(phoneme_type="espeak", espeak_voice=espeak_voice),
++        g2p_factory=make_g2p,
++    )
++    result = voice.synthesize(SynthesisRequest("id", "hello", language))
++
++    assert result.language == language
++    assert factory_calls == [voice.config.espeak_voice]
++
++
++@pytest.mark.parametrize(
++    ("language", "espeak_voice"),
++    [
++        ("en-us", "en-gb-x-rp"),
++        ("de-de", "en-gb-x-rp"),
++        ("pt-br", "pt-pt"),
++    ],
++)
++def test_incompatible_model_language_is_typed(language: str, espeak_voice: str) -> None:
++    voice = PiperVoice(
++        FakeRuntime(),
++        voice_config(phoneme_type="espeak", espeak_voice=espeak_voice),
++    )
+
+     with pytest.raises(InvalidLanguageError, match="incompatible"):
+-        voice.synthesize(SynthesisRequest("id", "hello", "de-de"))
++        voice.synthesize(SynthesisRequest("id", "hello", language))
++
++
++def test_non_espeak_frontend_keeps_request_language_without_model_restriction() -> None:
++    factory_calls: list[str] = []
++
++    def make_g2p(language: str, *, config: Any, **options: Any) -> FakeG2P:
++        factory_calls.append(language)
++        return FakeG2P()
++
++    voice = PiperVoice(
++        FakeRuntime(),
++        voice_config(phoneme_type="text", espeak_voice="en-gb-x-rp"),
++        g2p_factory=make_g2p,
++    )
++    result = voice.synthesize(SynthesisRequest("id", "hello", "en-us"))
++
++    assert result.language == "en-us"
++    assert factory_calls == ["en-us"]
+
+
+ def test_g2p_and_backend_errors_are_translated_to_typed_errors() -> None:

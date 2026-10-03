@@ -1,0 +1,14 @@
+rows:
+  - sha: 65433e2357847c2c2214d7c0e3829c7e2eedf6d9
+    inspected: true
+    inspected_paths:
+      - pipersynth/voice.py
+      - tests/test_engine_voice.py
+    observed_behavior: >-
+      For eSpeak models, language tags compatible with the configured voice use that exact voice for phonemization; incompatible languages remain rejected. Non-eSpeak models continue using the requested language.
+    public_impact: public
+    decision: accepted
+    target_entry_key: null
+    target_entry_id: null
+    notes: ""
+    stale: false
