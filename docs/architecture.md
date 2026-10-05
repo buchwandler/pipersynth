@@ -25,6 +25,12 @@ PiperSynth has no runtime dependency on Utterplan, SSMD, or AudioCompose. Caller
 
 Each request returns independent audio. PiperSynth does not create a global timeline, markers, document pauses, or fabricated word timings. `supports_timestamps` is false.
 
+## Request API compatibility
+
+`REQUEST_API_VERSION` identifies the stable public request contract. `request_api_contract()` returns its immutable capability declaration without loading a voice model or opening an ONNX Runtime session. The contract names `SynthesisRequest`, `SynthesisResult`, and `PiperVoice.synthesize` as the request-oriented surface. It records support for linguistic tokens, pronunciation overrides, named voice bundles, speakers, and voice-level configuration; whole-request phoneme input and word timings are unsupported. Callers retain ownership of text boundaries.
+
+For new integration code, `SynthesisRequest.tokens` is the canonical linguistic-token field. `SynthesisSegment.annotations` remains only as a compatibility shape; `PiperVoice.synthesize()` adapts it into `SynthesisRequest.tokens`. Integrations should not depend on the legacy `annotations` field. The API contract does not loosen active-model language checks, and known oversize requests still raise `SynthesisInputTooLongError` without being split.
+
 ## Voice lifecycle
 
 `PiperVoice.from_pretrained()` installs or reuses an OnnxVoice-managed Piper voice. `PiperVoice.from_local()` opens a local model through OnnxVoice and uses the adjacent `<model>.json` config unless another config path is supplied. Context-manager exit closes the OnnxVoice runtime.

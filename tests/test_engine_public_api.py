@@ -52,6 +52,10 @@ def test_public_api_exports_only_engine_request_surface() -> None:
     assert pipersynth.SynthesisSegment
     assert pipersynth.SynthesisRequest
     assert pipersynth.SynthesisResult
+    assert pipersynth.REQUEST_API_VERSION == 1
+    assert callable(pipersynth.request_api_contract)
+    assert callable(pipersynth.PiperVoice.synthesize)
+    assert callable(pipersynth.VoiceAssetManager)
     for removed in (
         "PiperPipeline",
         "PipelineConfig",

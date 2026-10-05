@@ -8,6 +8,7 @@ except ImportError:
     __version__ = "0.0.0+unknown"
     __version_tuple__ = (0, 0, 0)
 
+from .api_contract import REQUEST_API_VERSION, RequestApiContract, request_api_contract
 from .asset_manager import CacheInfo, VoiceAssetManager, list_cached_voices, list_voices
 from .asset_progress import AssetProgressCallback, AssetProgressEvent, ConsoleAssetProgress
 from .assets import VoiceBundle, VoiceMetadata, load_catalog_voice
@@ -94,6 +95,9 @@ __all__ = [
     "OptionalDependencyError",
     "PiperSynthError",
     "PiperVoice",
+    "RequestApiContract",
+    "REQUEST_API_VERSION",
+    "request_api_contract",
     "PronunciationOverride",
     "ProviderConfig",
     "ProviderSpec",

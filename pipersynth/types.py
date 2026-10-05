@@ -158,7 +158,7 @@ class SynthesisSegment:
 
 @dataclass(frozen=True, slots=True)
 class SynthesisRequest:
-    """One caller-shaped atomic Piper synthesis request."""
+    """One caller-shaped atomic Piper request; ``tokens`` is the canonical token field."""
 
     id: str
     text: str

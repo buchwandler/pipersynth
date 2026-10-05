@@ -9,7 +9,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
     - uses: actions/checkout@v4
     - name: Setup Python
@@ -26,3 +26,9 @@ jobs:
       run: python -m mypy --config-file tests/typecheck/mypy.ini tests/typecheck/engine_api.py
     - name: Tests
       run: pytest -m "not slow"
+    - name: Build wheel for isolated API smoke test
+      if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14'
+      run: python -m build --wheel --outdir "${{ runner.temp }}/pipersynth-wheel"
+    - name: Verify installed-wheel API in fresh environment
+      if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14'
+      run: python tests/check_wheel_api.py "${{ runner.temp }}/pipersynth-wheel"

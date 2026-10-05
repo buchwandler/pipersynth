@@ -2,15 +2,18 @@ from pathlib import Path
 from typing import assert_type
 
 from pipersynth import (
+    REQUEST_API_VERSION,
     LinguisticToken,
     PiperVoice,
     PronunciationOverride,
     RenderedChunk,
+    RequestApiContract,
     SynthesisConfig,
     SynthesisRequest,
     SynthesisResult,
     SynthesisSegment,
     VoiceLevelConfig,
+    request_api_contract,
     synthesize,
     synthesize_to_wav,
 )
@@ -32,6 +35,9 @@ config = SynthesisConfig(voice_level=VoiceLevelConfig(mode="calibrated"))
 assert_type(request, SynthesisRequest)
 assert_type(segment, SynthesisSegment)
 assert_type(config, SynthesisConfig)
+contract = request_api_contract()
+assert_type(contract, RequestApiContract)
+assert_type(REQUEST_API_VERSION, int)
 assert_type(RenderedChunk, type[RenderedChunk])
 assert_type(PiperVoice, type[PiperVoice])
 
